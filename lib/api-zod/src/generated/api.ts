@@ -42,6 +42,12 @@ export const uploadSelectedFoldersBodyPrivateDefault = false;
 export const UploadSelectedFoldersBody = zod.object({
   sessionId: zod.string(),
   selectedFolders: zod.array(zod.string()),
+  repoNameOverrides: zod
+    .record(zod.string(), zod.string())
+    .optional()
+    .describe(
+      "Optional map of folderName → custom repo name. Defaults to folder name.",
+    ),
   private: zod.boolean().default(uploadSelectedFoldersBodyPrivateDefault),
   description: zod.string().optional(),
 });

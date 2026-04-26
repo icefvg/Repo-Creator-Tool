@@ -8,12 +8,13 @@ import { motion, AnimatePresence, useMotionValue, useTransform } from "framer-mo
 import {
   UploadCloud, CheckCircle2, FileArchive, Lock, Globe, Github,
   AlertCircle, Loader2, ExternalLink, FolderOpen, ArrowRight,
-  RotateCcw, PackageOpen, X, ChevronRight,
+  RotateCcw, PackageOpen, X, ChevronRight, Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch as SwitchUI } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 
 import {
   useGetGithubUser,
@@ -66,6 +67,7 @@ function GithubUploaderApp() {
   const [archiveName, setArchiveName] = useState<string>("");
   const [folders, setFolders] = useState<FolderInfo[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
+  const [repoNameOverrides, setRepoNameOverrides] = useState<Map<string, string>>(new Map());
   const [isPrivate, setIsPrivate] = useState(false);
   const [description, setDescription] = useState("");
   const [results, setResults] = useState<RepoResult[]>([]);
@@ -106,6 +108,7 @@ function GithubUploaderApp() {
         setArchiveName(data.archiveName);
         setFolders(data.folders);
         setSelectedFolders(new Set(data.folders.map(f => f.name)));
+        setRepoNameOverrides(new Map(data.folders.map(f => [f.name, f.name])));
         setStep("select");
       },
     });
@@ -113,10 +116,15 @@ function GithubUploaderApp() {
 
   const handleUpload = useCallback(() => {
     if (!sessionId || selectedFolders.size === 0) return;
+    const overrides: Record<string, string> = {};
+    for (const [folder, name] of repoNameOverrides) {
+      if (name.trim() && name.trim() !== folder) overrides[folder] = name.trim();
+    }
     uploadMutation.mutate({
       data: {
         sessionId,
         selectedFolders: [...selectedFolders],
+        repoNameOverrides: overrides,
         private: isPrivate,
         description,
       },
@@ -127,7 +135,7 @@ function GithubUploaderApp() {
         qClient.invalidateQueries({ queryKey: getListRecentReposQueryKey() });
       },
     });
-  }, [sessionId, selectedFolders, isPrivate, description, uploadMutation, qClient]);
+  }, [sessionId, selectedFolders, repoNameOverrides, isPrivate, description, uploadMutation, qClient]);
 
   const handleReset = useCallback(() => {
     setStep("drop");
@@ -135,10 +143,19 @@ function GithubUploaderApp() {
     setSessionId("");
     setFolders([]);
     setSelectedFolders(new Set());
+    setRepoNameOverrides(new Map());
     setDescription("");
     previewMutation.reset();
     uploadMutation.reset();
   }, [previewMutation, uploadMutation]);
+
+  const handleRename = (folderName: string, value: string) => {
+    setRepoNameOverrides(prev => {
+      const next = new Map(prev);
+      next.set(folderName, value);
+      return next;
+    });
+  };
 
   const toggleFolder = (name: string) => {
     setSelectedFolders(prev => {
@@ -368,33 +385,79 @@ function GithubUploaderApp() {
 
                 {/* Folder list */}
                 <motion.div variants={stagger} className="space-y-2 mb-6">
-                  {folders.map((folder, i) => {
+                  {folders.map((folder) => {
                     const checked = selectedFolders.has(folder.name);
+                    const repoName = repoNameOverrides.get(folder.name) ?? folder.name;
+                    const isRenamed = repoName.trim() && repoName.trim() !== folder.name;
                     return (
                       <motion.div
                         key={folder.name}
                         variants={fadeUp}
-                        whileHover={{ x: 3 }}
                         transition={spring}
-                        onClick={() => toggleFolder(folder.name)}
                         data-testid={`folder-${folder.name}`}
-                        className={`flex items-center justify-between p-4 rounded-xl border cursor-pointer transition-colors select-none ${
-                          checked ? "bg-primary/5 border-primary/30 text-foreground" : "bg-card border-border text-muted-foreground hover:border-border/80"
+                        className={`rounded-xl border transition-colors ${
+                          checked ? "bg-primary/5 border-primary/30" : "bg-card border-border opacity-60 hover:opacity-80"
                         }`}
                       >
-                        <div className="flex items-center gap-3">
-                          <Checkbox
-                            checked={checked}
-                            onCheckedChange={() => toggleFolder(folder.name)}
-                            className="pointer-events-none"
-                            data-testid={`checkbox-${folder.name}`}
-                          />
-                          <FolderOpen className={`w-4.5 h-4.5 flex-shrink-0 ${checked ? "text-primary" : ""}`} />
-                          <span className={`font-medium font-mono text-sm ${checked ? "text-foreground" : ""}`}>{folder.name}</span>
+                        {/* Top row: checkbox + folder source name */}
+                        <div
+                          className="flex items-center justify-between px-4 pt-3.5 pb-2 cursor-pointer select-none"
+                          onClick={() => toggleFolder(folder.name)}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <Checkbox
+                              checked={checked}
+                              onCheckedChange={() => toggleFolder(folder.name)}
+                              className="pointer-events-none flex-shrink-0"
+                              data-testid={`checkbox-${folder.name}`}
+                            />
+                            <FolderOpen className={`w-4 h-4 flex-shrink-0 ${checked ? "text-primary" : "text-muted-foreground"}`} />
+                            <span className={`font-mono text-sm truncate ${checked ? "text-foreground font-medium" : "text-muted-foreground"}`}>
+                              {folder.name}
+                            </span>
+                          </div>
+                          <span className="text-xs bg-secondary/60 border border-border/30 px-2 py-0.5 rounded-md ml-2 flex-shrink-0">
+                            {folder.fileCount} file{folder.fileCount !== 1 ? "s" : ""}
+                          </span>
                         </div>
-                        <span className="text-xs bg-secondary/60 border border-border/30 px-2 py-0.5 rounded-md">
-                          {folder.fileCount} file{folder.fileCount !== 1 ? "s" : ""}
-                        </span>
+
+                        {/* Repo name row (only when checked) */}
+                        <AnimatePresence>
+                          {checked && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: "auto" }}
+                              exit={{ opacity: 0, height: 0 }}
+                              transition={{ duration: 0.18 }}
+                              className="overflow-hidden"
+                            >
+                              <div className="flex items-center gap-2 px-4 pb-3.5 pt-0.5">
+                                <ArrowRight className="w-3.5 h-3.5 text-muted-foreground/40 flex-shrink-0" />
+                                <div className="relative flex-1">
+                                  <Pencil className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground/50 pointer-events-none" />
+                                  <Input
+                                    value={repoName}
+                                    onChange={e => handleRename(folder.name, e.target.value)}
+                                    onClick={e => e.stopPropagation()}
+                                    onKeyDown={e => e.stopPropagation()}
+                                    className="h-7 pl-7 text-xs font-mono bg-background/60 border-border/40 focus-visible:ring-1 focus-visible:ring-primary/40"
+                                    placeholder={folder.name}
+                                    data-testid={`rename-input-${folder.name}`}
+                                  />
+                                </div>
+                                {isRenamed && (
+                                  <button
+                                    onClick={e => { e.stopPropagation(); handleRename(folder.name, folder.name); }}
+                                    className="text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors flex-shrink-0"
+                                    title="Reset to folder name"
+                                  >
+                                    <RotateCcw className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                       </motion.div>
                     );
                   })}

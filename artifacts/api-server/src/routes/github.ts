@@ -130,8 +130,8 @@ router.post("/github/preview", upload.single("file"), async (req, res) => {
 router.post("/github/upload-selected", async (req, res) => {
   if (!GITHUB_TOKEN) { res.status(500).json({ error: "GitHub token not configured" }); return; }
 
-  const { sessionId, selectedFolders, private: isPrivate = false, description = "" } = req.body as {
-    sessionId: string; selectedFolders: string[]; private?: boolean; description?: string;
+  const { sessionId, selectedFolders, repoNameOverrides = {}, private: isPrivate = false, description = "" } = req.body as {
+    sessionId: string; selectedFolders: string[]; repoNameOverrides?: Record<string, string>; private?: boolean; description?: string;
   };
 
   if (!sessionId || !selectedFolders?.length) {
@@ -163,7 +163,8 @@ router.post("/github/upload-selected", async (req, res) => {
       continue;
     }
 
-    const repoName = folderName.replace(/[^a-zA-Z0-9._-]/g, "-").replace(/^-+|-+$/g, "") || "repo";
+    const rawName = (repoNameOverrides[folderName] ?? folderName).trim() || folderName;
+    const repoName = rawName.replace(/[^a-zA-Z0-9._-]/g, "-").replace(/^-+|-+$/g, "") || "repo";
 
     const createRes = await githubFetch("/user/repos", {
       method: "POST",

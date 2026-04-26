@@ -20,9 +20,16 @@ export interface PreviewResult {
   archiveName: string;
 }
 
+/**
+ * Optional map of folderName → custom repo name. Defaults to folder name.
+ */
+export type UploadSelectedBodyRepoNameOverrides = { [key: string]: string };
+
 export interface UploadSelectedBody {
   sessionId: string;
   selectedFolders: string[];
+  /** Optional map of folderName → custom repo name. Defaults to folder name. */
+  repoNameOverrides?: UploadSelectedBodyRepoNameOverrides;
   private?: boolean;
   description?: string;
 }
