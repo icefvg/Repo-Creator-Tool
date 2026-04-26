@@ -100,9 +100,7 @@ function GithubUploaderApp() {
 
   const handlePreview = useCallback(() => {
     if (!selectedFile) return;
-    const formData = new FormData();
-    formData.append("file", selectedFile);
-    previewMutation.mutate({ data: formData as any }, {
+    previewMutation.mutate({ data: { file: selectedFile } }, {
       onSuccess: (data) => {
         setSessionId(data.sessionId);
         setArchiveName(data.archiveName);

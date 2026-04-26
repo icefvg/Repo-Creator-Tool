@@ -134,9 +134,13 @@ components:
   schemas:
     PreviewArchiveBody:
       type: object
+      required:
+        - file
       properties:
-        description:
+        file:
           type: string
+          format: binary
+          description: Archive file to extract (zip, tar, tar.gz, tgz, tar.bz2, tar.xz)
 
     PreviewResult:
       type: object

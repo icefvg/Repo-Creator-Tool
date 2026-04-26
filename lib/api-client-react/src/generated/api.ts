@@ -124,9 +124,7 @@ export const previewArchive = async (
   options?: RequestInit,
 ): Promise<PreviewResult> => {
   const formData = new FormData();
-  if (previewArchiveBody.description !== undefined) {
-    formData.append(`description`, previewArchiveBody.description);
-  }
+  formData.append(`file`, previewArchiveBody.file);
 
   return customFetch<PreviewResult>(getPreviewArchiveUrl(), {
     ...options,

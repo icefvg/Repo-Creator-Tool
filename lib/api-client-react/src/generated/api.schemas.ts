@@ -6,7 +6,8 @@
  * OpenAPI spec version: 0.1.0
  */
 export interface PreviewArchiveBody {
-  description?: string;
+  /** Archive file to extract (zip, tar, tar.gz, tgz, tar.bz2, tar.xz) */
+  file: Blob;
 }
 
 export interface FolderInfo {

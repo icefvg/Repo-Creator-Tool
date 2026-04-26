@@ -19,7 +19,11 @@ export const HealthCheckResponse = zod.object({
  * @summary Preview archive contents
  */
 export const PreviewArchiveBody = zod.object({
-  description: zod.string().optional(),
+  file: zod
+    .instanceof(File)
+    .describe(
+      "Archive file to extract (zip, tar, tar.gz, tgz, tar.bz2, tar.xz)",
+    ),
 });
 
 export const PreviewArchiveResponse = zod.object({
