@@ -21,8 +21,10 @@ import type {
   GithubRepo,
   GithubUser,
   HealthStatus,
-  UploadResult,
-  UploadZipToGithubBody,
+  PreviewArchiveBody,
+  PreviewResult,
+  UploadSelectedBody,
+  UploadSelectedResult,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -35,7 +37,6 @@ type Awaited<O> = O extends AwaitedInput<infer T> ? T : never;
 type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
 
 /**
- * Returns server health status
  * @summary Health check
  */
 export const getHealthCheckUrl = () => {
@@ -111,50 +112,47 @@ export function useHealthCheck<
 }
 
 /**
- * Accepts a ZIP file (multipart/form-data), extracts it, and creates a GitHub repository from the subfolder structure. The repo name is derived from the subfolder name inside the ZIP.
- * @summary Upload ZIP to GitHub
+ * Accepts an archive file (zip, tar, tar.gz, tgz, tar.bz2), extracts it in memory, and returns the list of top-level subfolders with file counts. Returns a sessionId to reference the temp data for upload.
+ * @summary Preview archive contents
  */
-export const getUploadZipToGithubUrl = () => {
-  return `/api/github/upload`;
+export const getPreviewArchiveUrl = () => {
+  return `/api/github/preview`;
 };
 
-export const uploadZipToGithub = async (
-  uploadZipToGithubBody: UploadZipToGithubBody,
+export const previewArchive = async (
+  previewArchiveBody: PreviewArchiveBody,
   options?: RequestInit,
-): Promise<UploadResult> => {
+): Promise<PreviewResult> => {
   const formData = new FormData();
-  if (uploadZipToGithubBody.private !== undefined) {
-    formData.append(`private`, uploadZipToGithubBody.private.toString());
-  }
-  if (uploadZipToGithubBody.description !== undefined) {
-    formData.append(`description`, uploadZipToGithubBody.description);
+  if (previewArchiveBody.description !== undefined) {
+    formData.append(`description`, previewArchiveBody.description);
   }
 
-  return customFetch<UploadResult>(getUploadZipToGithubUrl(), {
+  return customFetch<PreviewResult>(getPreviewArchiveUrl(), {
     ...options,
     method: "POST",
     body: formData,
   });
 };
 
-export const getUploadZipToGithubMutationOptions = <
+export const getPreviewArchiveMutationOptions = <
   TError = ErrorType<ErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof uploadZipToGithub>>,
+    Awaited<ReturnType<typeof previewArchive>>,
     TError,
-    { data: BodyType<UploadZipToGithubBody> },
+    { data: BodyType<PreviewArchiveBody> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationOptions<
-  Awaited<ReturnType<typeof uploadZipToGithub>>,
+  Awaited<ReturnType<typeof previewArchive>>,
   TError,
-  { data: BodyType<UploadZipToGithubBody> },
+  { data: BodyType<PreviewArchiveBody> },
   TContext
 > => {
-  const mutationKey = ["uploadZipToGithub"];
+  const mutationKey = ["previewArchive"];
   const { mutation: mutationOptions, request: requestOptions } = options
     ? options.mutation &&
       "mutationKey" in options.mutation &&
@@ -164,48 +162,134 @@ export const getUploadZipToGithubMutationOptions = <
     : { mutation: { mutationKey }, request: undefined };
 
   const mutationFn: MutationFunction<
-    Awaited<ReturnType<typeof uploadZipToGithub>>,
-    { data: BodyType<UploadZipToGithubBody> }
+    Awaited<ReturnType<typeof previewArchive>>,
+    { data: BodyType<PreviewArchiveBody> }
   > = (props) => {
     const { data } = props ?? {};
 
-    return uploadZipToGithub(data, requestOptions);
+    return previewArchive(data, requestOptions);
   };
 
   return { mutationFn, ...mutationOptions };
 };
 
-export type UploadZipToGithubMutationResult = NonNullable<
-  Awaited<ReturnType<typeof uploadZipToGithub>>
+export type PreviewArchiveMutationResult = NonNullable<
+  Awaited<ReturnType<typeof previewArchive>>
 >;
-export type UploadZipToGithubMutationBody = BodyType<UploadZipToGithubBody>;
-export type UploadZipToGithubMutationError = ErrorType<ErrorResponse>;
+export type PreviewArchiveMutationBody = BodyType<PreviewArchiveBody>;
+export type PreviewArchiveMutationError = ErrorType<ErrorResponse>;
 
 /**
- * @summary Upload ZIP to GitHub
+ * @summary Preview archive contents
  */
-export const useUploadZipToGithub = <
+export const usePreviewArchive = <
   TError = ErrorType<ErrorResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof uploadZipToGithub>>,
+    Awaited<ReturnType<typeof previewArchive>>,
     TError,
-    { data: BodyType<UploadZipToGithubBody> },
+    { data: BodyType<PreviewArchiveBody> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationResult<
-  Awaited<ReturnType<typeof uploadZipToGithub>>,
+  Awaited<ReturnType<typeof previewArchive>>,
   TError,
-  { data: BodyType<UploadZipToGithubBody> },
+  { data: BodyType<PreviewArchiveBody> },
   TContext
 > => {
-  return useMutation(getUploadZipToGithubMutationOptions(options));
+  return useMutation(getPreviewArchiveMutationOptions(options));
 };
 
 /**
- * Returns the authenticated GitHub user info
+ * Creates one GitHub repository per selected subfolder using a previously previewed archive session.
+ * @summary Upload selected folders to GitHub
+ */
+export const getUploadSelectedFoldersUrl = () => {
+  return `/api/github/upload-selected`;
+};
+
+export const uploadSelectedFolders = async (
+  uploadSelectedBody: UploadSelectedBody,
+  options?: RequestInit,
+): Promise<UploadSelectedResult> => {
+  return customFetch<UploadSelectedResult>(getUploadSelectedFoldersUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(uploadSelectedBody),
+  });
+};
+
+export const getUploadSelectedFoldersMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadSelectedFolders>>,
+    TError,
+    { data: BodyType<UploadSelectedBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof uploadSelectedFolders>>,
+  TError,
+  { data: BodyType<UploadSelectedBody> },
+  TContext
+> => {
+  const mutationKey = ["uploadSelectedFolders"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof uploadSelectedFolders>>,
+    { data: BodyType<UploadSelectedBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return uploadSelectedFolders(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UploadSelectedFoldersMutationResult = NonNullable<
+  Awaited<ReturnType<typeof uploadSelectedFolders>>
+>;
+export type UploadSelectedFoldersMutationBody = BodyType<UploadSelectedBody>;
+export type UploadSelectedFoldersMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Upload selected folders to GitHub
+ */
+export const useUploadSelectedFolders = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadSelectedFolders>>,
+    TError,
+    { data: BodyType<UploadSelectedBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof uploadSelectedFolders>>,
+  TError,
+  { data: BodyType<UploadSelectedBody> },
+  TContext
+> => {
+  return useMutation(getUploadSelectedFoldersMutationOptions(options));
+};
+
+/**
  * @summary Get authenticated GitHub user
  */
 export const getGetGithubUserUrl = () => {
@@ -281,7 +365,6 @@ export function useGetGithubUser<
 }
 
 /**
- * Lists the most recently created repos for the authenticated user
  * @summary List recently created repos
  */
 export const getListRecentReposUrl = () => {

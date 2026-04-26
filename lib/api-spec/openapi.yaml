@@ -18,7 +18,6 @@ paths:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -27,25 +26,57 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
 
-  /github/upload:
+  /github/preview:
     post:
-      operationId: uploadZipToGithub
+      operationId: previewArchive
       tags: [github]
-      summary: Upload ZIP to GitHub
-      description: Accepts a ZIP file (multipart/form-data), extracts it, and creates a GitHub repository from the subfolder structure. The repo name is derived from the subfolder name inside the ZIP.
+      summary: Preview archive contents
+      description: Accepts an archive file (zip, tar, tar.gz, tgz, tar.bz2), extracts it in memory, and returns the list of top-level subfolders with file counts. Returns a sessionId to reference the temp data for upload.
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
-              $ref: "#/components/schemas/UploadZipToGithubBody"
+              $ref: "#/components/schemas/PreviewArchiveBody"
       responses:
         "200":
-          description: Repository created successfully
+          description: Subfolders found
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/UploadResult"
+                $ref: "#/components/schemas/PreviewResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /github/upload-selected:
+    post:
+      operationId: uploadSelectedFolders
+      tags: [github]
+      summary: Upload selected folders to GitHub
+      description: Creates one GitHub repository per selected subfolder using a previously previewed archive session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadSelectedBody"
+      responses:
+        "200":
+          description: Repositories created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadSelectedResult"
         "400":
           description: Bad request
           content:
@@ -64,7 +95,6 @@ paths:
       operationId: getGithubUser
       tags: [github]
       summary: Get authenticated GitHub user
-      description: Returns the authenticated GitHub user info
       responses:
         "200":
           description: User info
@@ -84,7 +114,6 @@ paths:
       operationId: listRecentRepos
       tags: [github]
       summary: List recently created repos
-      description: Lists the most recently created repos for the authenticated user
       responses:
         "200":
           description: List of repos
@@ -103,16 +132,94 @@ paths:
 
 components:
   schemas:
-    UploadZipToGithubBody:
+    PreviewArchiveBody:
       type: object
       properties:
+        description:
+          type: string
+
+    PreviewResult:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        folders:
+          type: array
+          items:
+            $ref: "#/components/schemas/FolderInfo"
+        archiveName:
+          type: string
+      required:
+        - sessionId
+        - folders
+        - archiveName
+
+    FolderInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        fileCount:
+          type: integer
+      required:
+        - name
+        - fileCount
+
+    UploadSelectedBody:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        selectedFolders:
+          type: array
+          items:
+            type: string
         private:
           type: boolean
-          description: Whether the repository should be private
           default: false
         description:
           type: string
-          description: Optional repository description
+      required:
+        - sessionId
+        - selectedFolders
+
+    RepoUploadResult:
+      type: object
+      properties:
+        folderName:
+          type: string
+        repoName:
+          type: string
+        repoUrl:
+          type: string
+        filesUploaded:
+          type: integer
+        success:
+          type: boolean
+        error:
+          type: string
+      required:
+        - folderName
+        - repoName
+        - repoUrl
+        - filesUploaded
+        - success
+
+    UploadSelectedResult:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepoUploadResult"
+        totalCreated:
+          type: integer
+        totalFailed:
+          type: integer
+      required:
+        - results
+        - totalCreated
+        - totalFailed
 
     HealthStatus:
       type: object
@@ -121,23 +228,6 @@ components:
           type: string
       required:
         - status
-
-    UploadResult:
-      type: object
-      properties:
-        repoName:
-          type: string
-        repoUrl:
-          type: string
-        filesUploaded:
-          type: integer
-        message:
-          type: string
-      required:
-        - repoName
-        - repoUrl
-        - filesUploaded
-        - message
 
     GithubUser:
       type: object

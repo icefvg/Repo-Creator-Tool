@@ -1,16 +1,33 @@
 import { Router } from "express";
 import multer from "multer";
-import unzipper from "unzipper";
-import { Readable } from "stream";
+import decompress from "decompress";
+import { randomUUID } from "crypto";
 
 const router = Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_API = "https://api.github.com";
 
+// In-memory session store: sessionId -> extracted folder contents
+type FileEntry = { path: string; content: Buffer };
+type SessionData = {
+  folders: Map<string, FileEntry[]>;
+  archiveName: string;
+  expiresAt: number;
+};
+const sessions = new Map<string, SessionData>();
+
+// Cleanup expired sessions every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of sessions) {
+    if (session.expiresAt < now) sessions.delete(id);
+  }
+}, 5 * 60 * 1000);
+
 async function githubFetch(path: string, options: RequestInit = {}) {
-  const res = await fetch(`${GITHUB_API}${path}`, {
+  return fetch(`${GITHUB_API}${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${GITHUB_TOKEN}`,
@@ -20,54 +37,60 @@ async function githubFetch(path: string, options: RequestInit = {}) {
       ...(options.headers ?? {}),
     },
   });
-  return res;
 }
 
-router.get("/github/me", async (req, res) => {
-  if (!GITHUB_TOKEN) {
-    res.status(500).json({ error: "GitHub token not configured" });
-    return;
+async function extractArchive(buffer: Buffer, filename: string): Promise<Map<string, FileEntry[]>> {
+  let files: decompress.File[];
+  try {
+    files = await decompress(buffer);
+  } catch (err) {
+    throw new Error(`Could not extract archive "${filename}". Supported formats: .zip, .tar, .tar.gz, .tgz, .tar.bz2, .tar.xz`);
   }
+
+  const folderMap = new Map<string, FileEntry[]>();
+
+  for (const file of files) {
+    if (file.type === "directory" || !file.data || file.data.length === 0) continue;
+
+    const normalized = file.path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\//, "");
+    const parts = normalized.split("/").filter(Boolean);
+    if (parts.length < 2) continue; // skip root-level files
+
+    const topFolder = parts[0];
+    const relativePath = parts.slice(1).join("/");
+    if (!relativePath) continue;
+
+    if (!folderMap.has(topFolder)) folderMap.set(topFolder, []);
+    folderMap.get(topFolder)!.push({ path: relativePath, content: file.data });
+  }
+
+  return folderMap;
+}
+
+// GET /github/me
+router.get("/github/me", async (req, res) => {
+  if (!GITHUB_TOKEN) { res.status(500).json({ error: "GitHub token not configured" }); return; }
   try {
     const r = await githubFetch("/user");
-    if (!r.ok) {
-      const body = await r.text();
-      res.status(r.status).json({ error: "GitHub API error", details: body });
-      return;
-    }
+    if (!r.ok) { res.status(r.status).json({ error: "GitHub API error", details: await r.text() }); return; }
     const user = await r.json() as Record<string, unknown>;
-    res.json({
-      login: user["login"],
-      name: user["name"] ?? null,
-      avatarUrl: user["avatar_url"],
-      publicRepos: user["public_repos"],
-    });
+    res.json({ login: user["login"], name: user["name"] ?? null, avatarUrl: user["avatar_url"], publicRepos: user["public_repos"] });
   } catch (err) {
     req.log.error({ err }, "Failed to get GitHub user");
     res.status(500).json({ error: "Failed to fetch GitHub user" });
   }
 });
 
+// GET /github/repos
 router.get("/github/repos", async (req, res) => {
-  if (!GITHUB_TOKEN) {
-    res.status(500).json({ error: "GitHub token not configured" });
-    return;
-  }
+  if (!GITHUB_TOKEN) { res.status(500).json({ error: "GitHub token not configured" }); return; }
   try {
     const r = await githubFetch("/user/repos?sort=created&direction=desc&per_page=10");
-    if (!r.ok) {
-      const body = await r.text();
-      res.status(r.status).json({ error: "GitHub API error", details: body });
-      return;
-    }
+    if (!r.ok) { res.status(r.status).json({ error: "GitHub API error", details: await r.text() }); return; }
     const repos = await r.json() as Record<string, unknown>[];
-    res.json(repos.map((repo) => ({
-      name: repo["name"],
-      fullName: repo["full_name"],
-      url: repo["html_url"],
-      private: repo["private"],
-      createdAt: repo["created_at"],
-      description: repo["description"] ?? null,
+    res.json(repos.map(repo => ({
+      name: repo["name"], fullName: repo["full_name"], url: repo["html_url"],
+      private: repo["private"], createdAt: repo["created_at"], description: repo["description"] ?? null,
     })));
   } catch (err) {
     req.log.error({ err }, "Failed to list repos");
@@ -75,121 +98,103 @@ router.get("/github/repos", async (req, res) => {
   }
 });
 
-router.post("/github/upload", upload.single("file"), async (req, res) => {
-  if (!GITHUB_TOKEN) {
-    res.status(500).json({ error: "GitHub token not configured" });
-    return;
-  }
-  if (!req.file) {
-    res.status(400).json({ error: "No ZIP file uploaded" });
-    return;
-  }
-
-  const isPrivate = req.body.private === "true" || req.body.private === true;
-  const description: string = req.body.description ?? "";
-
+// POST /github/preview — upload archive, return folder list + store session
+router.post("/github/preview", upload.single("file"), async (req, res) => {
+  if (!req.file) { res.status(400).json({ error: "No archive file uploaded" }); return; }
   try {
-    // Extract ZIP in memory
-    const zipBuffer = req.file.buffer;
-    const directory = await unzipper.Open.buffer(zipBuffer);
-
-    // Find the top-level subfolder(s) — these become the repo name
-    // Structure: zip -> subfolder -> files...
-    const allPaths = directory.files.map((f) => f.path);
-
-    // Find unique top-level directories
-    const topLevelDirs = new Set<string>();
-    for (const p of allPaths) {
-      const parts = p.split("/");
-      if (parts.length > 1 && parts[0]) {
-        topLevelDirs.add(parts[0]);
-      }
-    }
-
-    if (topLevelDirs.size === 0) {
-      res.status(400).json({ error: "ZIP must contain at least one subfolder. Files at root level are not supported." });
+    const folderMap = await extractArchive(req.file.buffer, req.file.originalname);
+    if (folderMap.size === 0) {
+      res.status(400).json({ error: "No subfolders found. Archive must contain at least one folder with files inside it. Root-level files are ignored." });
       return;
     }
 
-    // Use the first top-level directory as the repo name
-    const repoName = [...topLevelDirs][0].replace(/[^a-zA-Z0-9._-]/g, "-");
+    const sessionId = randomUUID();
+    sessions.set(sessionId, {
+      folders: folderMap,
+      archiveName: req.file.originalname,
+      expiresAt: Date.now() + 15 * 60 * 1000,
+    });
 
-    // Get the authenticated user's login for the repo URL
-    const meRes = await githubFetch("/user");
-    if (!meRes.ok) {
-      res.status(500).json({ error: "Failed to authenticate with GitHub" });
-      return;
+    res.json({
+      sessionId,
+      folders: [...folderMap.entries()].map(([name, files]) => ({ name, fileCount: files.length })),
+      archiveName: req.file.originalname,
+    });
+  } catch (err: unknown) {
+    req.log.error({ err }, "Failed to extract archive");
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /github/upload-selected — create one repo per selected folder
+router.post("/github/upload-selected", async (req, res) => {
+  if (!GITHUB_TOKEN) { res.status(500).json({ error: "GitHub token not configured" }); return; }
+
+  const { sessionId, selectedFolders, private: isPrivate = false, description = "" } = req.body as {
+    sessionId: string; selectedFolders: string[]; private?: boolean; description?: string;
+  };
+
+  if (!sessionId || !selectedFolders?.length) {
+    res.status(400).json({ error: "sessionId and at least one selectedFolder are required" });
+    return;
+  }
+
+  const session = sessions.get(sessionId);
+  if (!session || session.expiresAt < Date.now()) {
+    sessions.delete(sessionId);
+    res.status(400).json({ error: "Session expired. Please re-upload the archive." });
+    return;
+  }
+
+  const meRes = await githubFetch("/user");
+  if (!meRes.ok) { res.status(500).json({ error: "Failed to authenticate with GitHub" }); return; }
+  const me = await meRes.json() as Record<string, unknown>;
+  const login = me["login"] as string;
+
+  const results: {
+    folderName: string; repoName: string; repoUrl: string;
+    filesUploaded: number; success: boolean; error?: string;
+  }[] = [];
+
+  for (const folderName of selectedFolders) {
+    const files = session.folders.get(folderName);
+    if (!files) {
+      results.push({ folderName, repoName: folderName, repoUrl: "", filesUploaded: 0, success: false, error: "Folder not found in session" });
+      continue;
     }
-    const me = await meRes.json() as Record<string, unknown>;
-    const login = me["login"] as string;
 
-    // Create the repository
+    const repoName = folderName.replace(/[^a-zA-Z0-9._-]/g, "-").replace(/^-+|-+$/g, "") || "repo";
+
     const createRes = await githubFetch("/user/repos", {
       method: "POST",
-      body: JSON.stringify({
-        name: repoName,
-        private: isPrivate,
-        description,
-        auto_init: false,
-      }),
+      body: JSON.stringify({ name: repoName, private: isPrivate, description, auto_init: false }),
     });
 
     if (!createRes.ok) {
       const errBody = await createRes.json() as Record<string, unknown>;
-      const msg = (errBody["message"] as string) ?? "Failed to create repository";
-      res.status(400).json({ error: msg, details: JSON.stringify(errBody["errors"] ?? "") });
-      return;
+      results.push({ folderName, repoName, repoUrl: "", filesUploaded: 0, success: false, error: String(errBody["message"] ?? "Failed to create repo") });
+      continue;
     }
 
-    // Read all files from the ZIP that belong to the first top-level folder
-    const filesToUpload: { path: string; content: Buffer }[] = [];
-
-    for (const file of directory.files) {
-      if (file.type === "Directory") continue;
-      const parts = file.path.split("/");
-      if (parts[0] !== [...topLevelDirs][0]) continue;
-
-      // Get path relative to the subfolder
-      const relativePath = parts.slice(1).join("/");
-      if (!relativePath) continue;
-
-      const content = await file.buffer();
-      filesToUpload.push({ path: relativePath, content });
-    }
-
-    if (filesToUpload.length === 0) {
-      res.status(400).json({ error: "No files found inside the subfolder" });
-      return;
-    }
-
-    // Upload files one by one via GitHub Contents API
     let filesUploaded = 0;
-    for (const f of filesToUpload) {
+    for (const f of files) {
       const encoded = f.content.toString("base64");
       const uploadRes = await githubFetch(`/repos/${login}/${repoName}/contents/${f.path}`, {
         method: "PUT",
-        body: JSON.stringify({
-          message: `Add ${f.path}`,
-          content: encoded,
-        }),
+        body: JSON.stringify({ message: `Add ${f.path}`, content: encoded }),
       });
-      if (uploadRes.ok) {
-        filesUploaded++;
-      } else {
-        req.log.warn({ path: f.path, status: uploadRes.status }, "Failed to upload file");
-      }
+      if (uploadRes.ok) filesUploaded++;
+      else req.log.warn({ path: f.path, status: uploadRes.status }, "Failed to upload file");
     }
 
-    res.json({
-      repoName,
-      repoUrl: `https://github.com/${login}/${repoName}`,
-      filesUploaded,
-      message: `Repository "${repoName}" created with ${filesUploaded} file(s) uploaded successfully.`,
-    });
-  } catch (err) {
-    req.log.error({ err }, "Failed to upload ZIP to GitHub");
-    res.status(500).json({ error: "Failed to process ZIP file", details: String(err) });
+    results.push({ folderName, repoName, repoUrl: `https://github.com/${login}/${repoName}`, filesUploaded, success: true });
   }
+
+  res.json({
+    results,
+    totalCreated: results.filter(r => r.success).length,
+    totalFailed: results.filter(r => !r.success).length,
+  });
 });
 
 export default router;

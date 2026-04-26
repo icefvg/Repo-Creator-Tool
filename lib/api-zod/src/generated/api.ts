@@ -8,7 +8,6 @@
 import * as zod from "zod";
 
 /**
- * Returns server health status
  * @summary Health check
  */
 export const HealthCheckResponse = zod.object({
@@ -16,31 +15,53 @@ export const HealthCheckResponse = zod.object({
 });
 
 /**
- * Accepts a ZIP file (multipart/form-data), extracts it, and creates a GitHub repository from the subfolder structure. The repo name is derived from the subfolder name inside the ZIP.
- * @summary Upload ZIP to GitHub
+ * Accepts an archive file (zip, tar, tar.gz, tgz, tar.bz2), extracts it in memory, and returns the list of top-level subfolders with file counts. Returns a sessionId to reference the temp data for upload.
+ * @summary Preview archive contents
  */
-export const uploadZipToGithubBodyPrivateDefault = false;
-
-export const UploadZipToGithubBody = zod.object({
-  private: zod
-    .boolean()
-    .default(uploadZipToGithubBodyPrivateDefault)
-    .describe("Whether the repository should be private"),
-  description: zod
-    .string()
-    .optional()
-    .describe("Optional repository description"),
+export const PreviewArchiveBody = zod.object({
+  description: zod.string().optional(),
 });
 
-export const UploadZipToGithubResponse = zod.object({
-  repoName: zod.string(),
-  repoUrl: zod.string(),
-  filesUploaded: zod.number(),
-  message: zod.string(),
+export const PreviewArchiveResponse = zod.object({
+  sessionId: zod.string(),
+  folders: zod.array(
+    zod.object({
+      name: zod.string(),
+      fileCount: zod.number(),
+    }),
+  ),
+  archiveName: zod.string(),
 });
 
 /**
- * Returns the authenticated GitHub user info
+ * Creates one GitHub repository per selected subfolder using a previously previewed archive session.
+ * @summary Upload selected folders to GitHub
+ */
+export const uploadSelectedFoldersBodyPrivateDefault = false;
+
+export const UploadSelectedFoldersBody = zod.object({
+  sessionId: zod.string(),
+  selectedFolders: zod.array(zod.string()),
+  private: zod.boolean().default(uploadSelectedFoldersBodyPrivateDefault),
+  description: zod.string().optional(),
+});
+
+export const UploadSelectedFoldersResponse = zod.object({
+  results: zod.array(
+    zod.object({
+      folderName: zod.string(),
+      repoName: zod.string(),
+      repoUrl: zod.string(),
+      filesUploaded: zod.number(),
+      success: zod.boolean(),
+      error: zod.string().optional(),
+    }),
+  ),
+  totalCreated: zod.number(),
+  totalFailed: zod.number(),
+});
+
+/**
  * @summary Get authenticated GitHub user
  */
 export const GetGithubUserResponse = zod.object({
@@ -51,7 +72,6 @@ export const GetGithubUserResponse = zod.object({
 });
 
 /**
- * Lists the most recently created repos for the authenticated user
  * @summary List recently created repos
  */
 export const ListRecentReposResponseItem = zod.object({
