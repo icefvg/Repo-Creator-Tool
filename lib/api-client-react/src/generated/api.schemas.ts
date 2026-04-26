@@ -35,6 +35,27 @@ export interface UploadSelectedBody {
   description?: string;
 }
 
+export interface UploadJobStarted {
+  jobId: string;
+}
+
+export interface JobProgress {
+  total: number;
+  completed: number;
+  currentRepo?: string;
+  currentAction?: string;
+}
+
+export type JobStateStatus =
+  (typeof JobStateStatus)[keyof typeof JobStateStatus];
+
+export const JobStateStatus = {
+  pending: "pending",
+  running: "running",
+  done: "done",
+  failed: "failed",
+} as const;
+
 export interface RepoUploadResult {
   folderName: string;
   repoName: string;
@@ -44,10 +65,13 @@ export interface RepoUploadResult {
   error?: string;
 }
 
-export interface UploadSelectedResult {
+export interface JobState {
+  jobId: string;
+  status: JobStateStatus;
+  progress: JobProgress;
   results: RepoUploadResult[];
-  totalCreated: number;
-  totalFailed: number;
+  error?: string;
+  createdAt: number;
 }
 
 export interface HealthStatus {

@@ -62,8 +62,8 @@ paths:
     post:
       operationId: uploadSelectedFolders
       tags: [github]
-      summary: Upload selected folders to GitHub
-      description: Creates one GitHub repository per selected subfolder using a previously previewed archive session.
+      summary: Start background upload job
+      description: Creates a background job to create one GitHub repository per selected subfolder. Returns a jobId immediately — poll /github/jobs/{jobId} for progress.
       requestBody:
         required: true
         content:
@@ -72,11 +72,11 @@ paths:
               $ref: "#/components/schemas/UploadSelectedBody"
       responses:
         "200":
-          description: Repositories created
+          description: Job started
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/UploadSelectedResult"
+                $ref: "#/components/schemas/UploadJobStarted"
         "400":
           description: Bad request
           content:
@@ -85,6 +85,31 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "500":
           description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /github/jobs/{jobId}:
+    get:
+      operationId: getJob
+      tags: [github]
+      summary: Get background job status
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobState"
+        "404":
+          description: Job not found
           content:
             application/json:
               schema:
@@ -192,6 +217,54 @@ components:
         - sessionId
         - selectedFolders
 
+    UploadJobStarted:
+      type: object
+      properties:
+        jobId:
+          type: string
+      required:
+        - jobId
+
+    JobProgress:
+      type: object
+      properties:
+        total:
+          type: integer
+        completed:
+          type: integer
+        currentRepo:
+          type: string
+        currentAction:
+          type: string
+      required:
+        - total
+        - completed
+
+    JobState:
+      type: object
+      properties:
+        jobId:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, done, failed]
+        progress:
+          $ref: "#/components/schemas/JobProgress"
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepoUploadResult"
+        error:
+          type: string
+        createdAt:
+          type: integer
+      required:
+        - jobId
+        - status
+        - progress
+        - results
+        - createdAt
+
     RepoUploadResult:
       type: object
       properties:
@@ -213,22 +286,6 @@ components:
         - repoUrl
         - filesUploaded
         - success
-
-    UploadSelectedResult:
-      type: object
-      properties:
-        results:
-          type: array
-          items:
-            $ref: "#/components/schemas/RepoUploadResult"
-        totalCreated:
-          type: integer
-        totalFailed:
-          type: integer
-      required:
-        - results
-        - totalCreated
-        - totalFailed
 
     HealthStatus:
       type: object

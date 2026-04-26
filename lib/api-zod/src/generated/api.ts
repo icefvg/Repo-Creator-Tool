@@ -38,8 +38,8 @@ export const PreviewArchiveResponse = zod.object({
 });
 
 /**
- * Creates one GitHub repository per selected subfolder using a previously previewed archive session.
- * @summary Upload selected folders to GitHub
+ * Creates a background job to create one GitHub repository per selected subfolder. Returns a jobId immediately — poll /github/jobs/{jobId} for progress.
+ * @summary Start background upload job
  */
 export const uploadSelectedFoldersBodyPrivateDefault = false;
 
@@ -57,6 +57,25 @@ export const UploadSelectedFoldersBody = zod.object({
 });
 
 export const UploadSelectedFoldersResponse = zod.object({
+  jobId: zod.string(),
+});
+
+/**
+ * @summary Get background job status
+ */
+export const GetJobParams = zod.object({
+  jobId: zod.coerce.string(),
+});
+
+export const GetJobResponse = zod.object({
+  jobId: zod.string(),
+  status: zod.enum(["pending", "running", "done", "failed"]),
+  progress: zod.object({
+    total: zod.number(),
+    completed: zod.number(),
+    currentRepo: zod.string().optional(),
+    currentAction: zod.string().optional(),
+  }),
   results: zod.array(
     zod.object({
       folderName: zod.string(),
@@ -67,8 +86,8 @@ export const UploadSelectedFoldersResponse = zod.object({
       error: zod.string().optional(),
     }),
   ),
-  totalCreated: zod.number(),
-  totalFailed: zod.number(),
+  error: zod.string().optional(),
+  createdAt: zod.number(),
 });
 
 /**

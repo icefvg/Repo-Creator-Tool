@@ -21,10 +21,11 @@ import type {
   GithubRepo,
   GithubUser,
   HealthStatus,
+  JobState,
   PreviewArchiveBody,
   PreviewResult,
+  UploadJobStarted,
   UploadSelectedBody,
-  UploadSelectedResult,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -201,8 +202,8 @@ export const usePreviewArchive = <
 };
 
 /**
- * Creates one GitHub repository per selected subfolder using a previously previewed archive session.
- * @summary Upload selected folders to GitHub
+ * Creates a background job to create one GitHub repository per selected subfolder. Returns a jobId immediately — poll /github/jobs/{jobId} for progress.
+ * @summary Start background upload job
  */
 export const getUploadSelectedFoldersUrl = () => {
   return `/api/github/upload-selected`;
@@ -211,8 +212,8 @@ export const getUploadSelectedFoldersUrl = () => {
 export const uploadSelectedFolders = async (
   uploadSelectedBody: UploadSelectedBody,
   options?: RequestInit,
-): Promise<UploadSelectedResult> => {
-  return customFetch<UploadSelectedResult>(getUploadSelectedFoldersUrl(), {
+): Promise<UploadJobStarted> => {
+  return customFetch<UploadJobStarted>(getUploadSelectedFoldersUrl(), {
     ...options,
     method: "POST",
     headers: { "Content-Type": "application/json", ...options?.headers },
@@ -265,7 +266,7 @@ export type UploadSelectedFoldersMutationBody = BodyType<UploadSelectedBody>;
 export type UploadSelectedFoldersMutationError = ErrorType<ErrorResponse>;
 
 /**
- * @summary Upload selected folders to GitHub
+ * @summary Start background upload job
  */
 export const useUploadSelectedFolders = <
   TError = ErrorType<ErrorResponse>,
@@ -286,6 +287,81 @@ export const useUploadSelectedFolders = <
 > => {
   return useMutation(getUploadSelectedFoldersMutationOptions(options));
 };
+
+/**
+ * @summary Get background job status
+ */
+export const getGetJobUrl = (jobId: string) => {
+  return `/api/github/jobs/${jobId}`;
+};
+
+export const getJob = async (
+  jobId: string,
+  options?: RequestInit,
+): Promise<JobState> => {
+  return customFetch<JobState>(getGetJobUrl(jobId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetJobQueryKey = (jobId: string) => {
+  return [`/api/github/jobs/${jobId}`] as const;
+};
+
+export const getGetJobQueryOptions = <
+  TData = Awaited<ReturnType<typeof getJob>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<Awaited<ReturnType<typeof getJob>>, TError, TData>;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetJobQueryKey(jobId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getJob>>> = ({
+    signal,
+  }) => getJob(jobId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!jobId,
+    ...queryOptions,
+  } as UseQueryOptions<Awaited<ReturnType<typeof getJob>>, TError, TData> & {
+    queryKey: QueryKey;
+  };
+};
+
+export type GetJobQueryResult = NonNullable<Awaited<ReturnType<typeof getJob>>>;
+export type GetJobQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get background job status
+ */
+
+export function useGetJob<
+  TData = Awaited<ReturnType<typeof getJob>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<Awaited<ReturnType<typeof getJob>>, TError, TData>;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetJobQueryOptions(jobId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
 
 /**
  * @summary Get authenticated GitHub user
