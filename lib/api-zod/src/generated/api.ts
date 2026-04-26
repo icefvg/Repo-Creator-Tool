@@ -14,3 +14,52 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * Accepts a ZIP file (multipart/form-data), extracts it, and creates a GitHub repository from the subfolder structure. The repo name is derived from the subfolder name inside the ZIP.
+ * @summary Upload ZIP to GitHub
+ */
+export const uploadZipToGithubBodyPrivateDefault = false;
+
+export const UploadZipToGithubBody = zod.object({
+  private: zod
+    .boolean()
+    .default(uploadZipToGithubBodyPrivateDefault)
+    .describe("Whether the repository should be private"),
+  description: zod
+    .string()
+    .optional()
+    .describe("Optional repository description"),
+});
+
+export const UploadZipToGithubResponse = zod.object({
+  repoName: zod.string(),
+  repoUrl: zod.string(),
+  filesUploaded: zod.number(),
+  message: zod.string(),
+});
+
+/**
+ * Returns the authenticated GitHub user info
+ * @summary Get authenticated GitHub user
+ */
+export const GetGithubUserResponse = zod.object({
+  login: zod.string(),
+  name: zod.string().optional(),
+  avatarUrl: zod.string(),
+  publicRepos: zod.number(),
+});
+
+/**
+ * Lists the most recently created repos for the authenticated user
+ * @summary List recently created repos
+ */
+export const ListRecentReposResponseItem = zod.object({
+  name: zod.string(),
+  fullName: zod.string(),
+  url: zod.string(),
+  private: zod.boolean(),
+  createdAt: zod.string(),
+  description: zod.string().optional(),
+});
+export const ListRecentReposResponse = zod.array(ListRecentReposResponseItem);

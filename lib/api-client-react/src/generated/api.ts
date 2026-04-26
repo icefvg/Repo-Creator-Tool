@@ -5,18 +5,28 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
+  MutationFunction,
   QueryFunction,
   QueryKey,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult,
 } from "@tanstack/react-query";
 
-import type { HealthStatus } from "./api.schemas";
+import type {
+  ErrorResponse,
+  GithubRepo,
+  GithubUser,
+  HealthStatus,
+  UploadResult,
+  UploadZipToGithubBody,
+} from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
-import type { ErrorType } from "../custom-fetch";
+import type { ErrorType, BodyType } from "../custom-fetch";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -92,6 +102,252 @@ export function useHealthCheck<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getHealthCheckQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Accepts a ZIP file (multipart/form-data), extracts it, and creates a GitHub repository from the subfolder structure. The repo name is derived from the subfolder name inside the ZIP.
+ * @summary Upload ZIP to GitHub
+ */
+export const getUploadZipToGithubUrl = () => {
+  return `/api/github/upload`;
+};
+
+export const uploadZipToGithub = async (
+  uploadZipToGithubBody: UploadZipToGithubBody,
+  options?: RequestInit,
+): Promise<UploadResult> => {
+  const formData = new FormData();
+  if (uploadZipToGithubBody.private !== undefined) {
+    formData.append(`private`, uploadZipToGithubBody.private.toString());
+  }
+  if (uploadZipToGithubBody.description !== undefined) {
+    formData.append(`description`, uploadZipToGithubBody.description);
+  }
+
+  return customFetch<UploadResult>(getUploadZipToGithubUrl(), {
+    ...options,
+    method: "POST",
+    body: formData,
+  });
+};
+
+export const getUploadZipToGithubMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadZipToGithub>>,
+    TError,
+    { data: BodyType<UploadZipToGithubBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof uploadZipToGithub>>,
+  TError,
+  { data: BodyType<UploadZipToGithubBody> },
+  TContext
+> => {
+  const mutationKey = ["uploadZipToGithub"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof uploadZipToGithub>>,
+    { data: BodyType<UploadZipToGithubBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return uploadZipToGithub(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UploadZipToGithubMutationResult = NonNullable<
+  Awaited<ReturnType<typeof uploadZipToGithub>>
+>;
+export type UploadZipToGithubMutationBody = BodyType<UploadZipToGithubBody>;
+export type UploadZipToGithubMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Upload ZIP to GitHub
+ */
+export const useUploadZipToGithub = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadZipToGithub>>,
+    TError,
+    { data: BodyType<UploadZipToGithubBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof uploadZipToGithub>>,
+  TError,
+  { data: BodyType<UploadZipToGithubBody> },
+  TContext
+> => {
+  return useMutation(getUploadZipToGithubMutationOptions(options));
+};
+
+/**
+ * Returns the authenticated GitHub user info
+ * @summary Get authenticated GitHub user
+ */
+export const getGetGithubUserUrl = () => {
+  return `/api/github/me`;
+};
+
+export const getGithubUser = async (
+  options?: RequestInit,
+): Promise<GithubUser> => {
+  return customFetch<GithubUser>(getGetGithubUserUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetGithubUserQueryKey = () => {
+  return [`/api/github/me`] as const;
+};
+
+export const getGetGithubUserQueryOptions = <
+  TData = Awaited<ReturnType<typeof getGithubUser>>,
+  TError = ErrorType<ErrorResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getGithubUser>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetGithubUserQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getGithubUser>>> = ({
+    signal,
+  }) => getGithubUser({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getGithubUser>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetGithubUserQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getGithubUser>>
+>;
+export type GetGithubUserQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get authenticated GitHub user
+ */
+
+export function useGetGithubUser<
+  TData = Awaited<ReturnType<typeof getGithubUser>>,
+  TError = ErrorType<ErrorResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getGithubUser>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetGithubUserQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Lists the most recently created repos for the authenticated user
+ * @summary List recently created repos
+ */
+export const getListRecentReposUrl = () => {
+  return `/api/github/repos`;
+};
+
+export const listRecentRepos = async (
+  options?: RequestInit,
+): Promise<GithubRepo[]> => {
+  return customFetch<GithubRepo[]>(getListRecentReposUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListRecentReposQueryKey = () => {
+  return [`/api/github/repos`] as const;
+};
+
+export const getListRecentReposQueryOptions = <
+  TData = Awaited<ReturnType<typeof listRecentRepos>>,
+  TError = ErrorType<ErrorResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listRecentRepos>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListRecentReposQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof listRecentRepos>>> = ({
+    signal,
+  }) => listRecentRepos({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listRecentRepos>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListRecentReposQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listRecentRepos>>
+>;
+export type ListRecentReposQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary List recently created repos
+ */
+
+export function useListRecentRepos<
+  TData = Awaited<ReturnType<typeof listRecentRepos>>,
+  TError = ErrorType<ErrorResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listRecentRepos>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListRecentReposQueryOptions(options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

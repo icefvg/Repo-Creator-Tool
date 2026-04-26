@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: github
+    description: GitHub repository operations
 paths:
   /healthz:
     get:
@@ -24,8 +26,94 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /github/upload:
+    post:
+      operationId: uploadZipToGithub
+      tags: [github]
+      summary: Upload ZIP to GitHub
+      description: Accepts a ZIP file (multipart/form-data), extracts it, and creates a GitHub repository from the subfolder structure. The repo name is derived from the subfolder name inside the ZIP.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/UploadZipToGithubBody"
+      responses:
+        "200":
+          description: Repository created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /github/me:
+    get:
+      operationId: getGithubUser
+      tags: [github]
+      summary: Get authenticated GitHub user
+      description: Returns the authenticated GitHub user info
+      responses:
+        "200":
+          description: User info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GithubUser"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /github/repos:
+    get:
+      operationId: listRecentRepos
+      tags: [github]
+      summary: List recently created repos
+      description: Lists the most recently created repos for the authenticated user
+      responses:
+        "200":
+          description: List of repos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GithubRepo"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
+    UploadZipToGithubBody:
+      type: object
+      properties:
+        private:
+          type: boolean
+          description: Whether the repository should be private
+          default: false
+        description:
+          type: string
+          description: Optional repository description
+
     HealthStatus:
       type: object
       properties:
@@ -34,3 +122,67 @@ components:
       required:
         - status
 
+    UploadResult:
+      type: object
+      properties:
+        repoName:
+          type: string
+        repoUrl:
+          type: string
+        filesUploaded:
+          type: integer
+        message:
+          type: string
+      required:
+        - repoName
+        - repoUrl
+        - filesUploaded
+        - message
+
+    GithubUser:
+      type: object
+      properties:
+        login:
+          type: string
+        name:
+          type: string
+        avatarUrl:
+          type: string
+        publicRepos:
+          type: integer
+      required:
+        - login
+        - avatarUrl
+        - publicRepos
+
+    GithubRepo:
+      type: object
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        url:
+          type: string
+        private:
+          type: boolean
+        createdAt:
+          type: string
+        description:
+          type: string
+      required:
+        - name
+        - fullName
+        - url
+        - private
+        - createdAt
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: string
+      required:
+        - error

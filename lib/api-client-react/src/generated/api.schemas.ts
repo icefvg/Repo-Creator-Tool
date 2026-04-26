@@ -5,6 +5,41 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export interface UploadZipToGithubBody {
+  /** Whether the repository should be private */
+  private?: boolean;
+  /** Optional repository description */
+  description?: string;
+}
+
 export interface HealthStatus {
   status: string;
+}
+
+export interface UploadResult {
+  repoName: string;
+  repoUrl: string;
+  filesUploaded: number;
+  message: string;
+}
+
+export interface GithubUser {
+  login: string;
+  name?: string;
+  avatarUrl: string;
+  publicRepos: number;
+}
+
+export interface GithubRepo {
+  name: string;
+  fullName: string;
+  url: string;
+  private: boolean;
+  createdAt: string;
+  description?: string;
+}
+
+export interface ErrorResponse {
+  error: string;
+  details?: string;
 }
