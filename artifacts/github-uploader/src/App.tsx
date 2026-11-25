@@ -104,7 +104,11 @@ function GithubUploaderApp() {
         return fetchGithubUserClient(customToken);
       }
       try {
-        return await getGithubUser();
+        const res = await getGithubUser();
+        if (res && typeof res === "object" && "login" in res && typeof res.login === "string") {
+          return res;
+        }
+        return null;
       } catch {
         return null;
       }
@@ -114,13 +118,14 @@ function GithubUploaderApp() {
 
   const { data: repos, isLoading: isReposLoading } = useQuery({
     queryKey: [...getListRecentReposQueryKey(), customToken ?? "env"],
-    enabled: !!user,
+    enabled: !!user?.login,
     queryFn: async () => {
       if (customToken) {
         return listRecentReposClient(customToken);
       }
       try {
-        return await listRecentRepos();
+        const res = await listRecentRepos();
+        return Array.isArray(res) ? res : [];
       } catch {
         return [];
       }
@@ -1607,7 +1612,7 @@ function GithubUploaderApp() {
                   <div key={i} className="h-28 bg-[#111114] rounded-xl border border-white/[0.06]" />
                 ))}
               </div>
-            ) : repos && repos.length > 0 ? (
+            ) : Array.isArray(repos) && repos.length > 0 ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {repos.slice(0, 9).map((repo) => (
                   <a
