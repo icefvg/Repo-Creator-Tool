@@ -24,10 +24,19 @@ import LandingPage from "@/components/LandingPage";
 import {
   useGetGithubUser, getGetGithubUserQueryKey,
   useListRecentRepos, getListRecentReposQueryKey,
-  usePreviewArchive, useUploadSelectedFolders, useGetFilePreview,
-  getJob, setAuthTokenGetter,
+  useUploadSelectedFolders,
+  getJob, setAuthTokenGetter, getGithubUser, listRecentRepos,
   FolderInfo, TechDetection, LicenseType, FolderRepoConfig,
 } from "@workspace/api-client-react";
+import {
+  extractArchivesClient,
+  getFilePreviewClient,
+  fetchGithubUserClient,
+  listRecentReposClient,
+  forgeRepositoriesClient,
+  type ClientSession,
+  type ClientJobProgress,
+} from "@/lib/client-forge";
 
 const TOKEN_STORAGE_KEY = "repoforge_gh_token";
 setAuthTokenGetter(() => {
@@ -75,26 +84,60 @@ function formatBytes(bytes: number): string {
 function GithubUploaderApp() {
   const { toast } = useToast();
   const qClient = useQueryClient();
-  const { data: user, isLoading: isUserLoading, error: userError } =
-    useGetGithubUser({ query: { queryKey: getGetGithubUserQueryKey() } });
-  const { data: repos, isLoading: isReposLoading } = useListRecentRepos({
-    query: { queryKey: getListRecentReposQueryKey(), enabled: !!user },
-  });
-
-  const previewMutation = usePreviewArchive();
-  const uploadMutation = useUploadSelectedFolders();
-  const filePreviewMutation = useGetFilePreview();
 
   const [showLanding, setShowLanding] = useState(true);
   const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
-  const [hasCustomToken, setHasCustomToken] = useState(() => {
+  const [customToken, setCustomToken] = useState<string | null>(() => {
     try {
-      return Boolean(sessionStorage.getItem(TOKEN_STORAGE_KEY));
+      return sessionStorage.getItem(TOKEN_STORAGE_KEY);
     } catch {
-      return false;
+      return null;
     }
   });
+  const hasCustomToken = Boolean(customToken);
+
+  const { data: user, isLoading: isUserLoading } = useQuery({
+    queryKey: [...getGetGithubUserQueryKey(), customToken ?? "env"],
+    queryFn: async () => {
+      if (customToken) {
+        return fetchGithubUserClient(customToken);
+      }
+      try {
+        return await getGithubUser();
+      } catch {
+        return null;
+      }
+    },
+    retry: false,
+  });
+
+  const { data: repos, isLoading: isReposLoading } = useQuery({
+    queryKey: [...getListRecentReposQueryKey(), customToken ?? "env"],
+    enabled: !!user,
+    queryFn: async () => {
+      if (customToken) {
+        return listRecentReposClient(customToken);
+      }
+      try {
+        return await listRecentRepos();
+      } catch {
+        return [];
+      }
+    },
+    retry: false,
+  });
+
+  const uploadMutation = useUploadSelectedFolders();
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
+  const [clientSession, setClientSession] = useState<ClientSession | null>(null);
+  const [clientFilePreview, setClientFilePreview] = useState<{
+    data: { path: string; content: string; size: number; isBinary: boolean } | null;
+    error: string | null;
+  }>({ data: null, error: null });
+  const [clientJob, setClientJob] = useState<ClientJobProgress | null>(null);
+  const [isClientForging, setIsClientForging] = useState(false);
 
   const [step, setStep] = useState<Step>("drop");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -188,40 +231,42 @@ function GithubUploaderApp() {
     }
   }, [handleFileSelect]);
 
-  // ── Step 1 -> Step 2: Scan & Preview Archive ─────────────────────────────────
-  const handlePreview = useCallback(() => {
+  // ── Step 1 -> Step 2: Scan & Preview Archive (Client-Side) ───────────────────
+  const handlePreview = useCallback(async () => {
     if (selectedFiles.length === 0) return;
-    const bodyData = selectedFiles.length === 1 ? { file: selectedFiles[0] } : { files: selectedFiles };
-    previewMutation.mutate(
-      { data: bodyData },
-      {
-        onSuccess: (data) => {
-          setSessionId(data.sessionId);
-          setArchiveName(data.archiveName);
-          setFolders(data.folders);
-          setSelectedFolders(new Set(data.folders.map((f) => f.name)));
+    setIsExtracting(true);
+    setExtractError(null);
+    try {
+      const session = await extractArchivesClient(selectedFiles);
+      setClientSession(session);
+      setSessionId(session.sessionId);
+      setArchiveName(session.archiveName);
+      setFolders(session.folderInfos);
+      setSelectedFolders(new Set(session.folderInfos.map((f) => f.name)));
 
-          const initialConfigs = new Map<string, FolderRepoConfig>();
-          data.folders.forEach((f) => {
-            initialConfigs.set(f.name, {
-              repoName: f.name,
-              private: globalPrivate,
-              description: "",
-              topics: f.detectedTech?.topics ?? [],
-              license: "MIT",
-              generateReadme: true,
-              generateGitignore: true,
-            });
-          });
-          setRepoConfigs(initialConfigs);
-          setStep("preview");
-        },
-      }
-    );
-  }, [selectedFiles, globalPrivate, previewMutation]);
+      const initialConfigs = new Map<string, FolderRepoConfig>();
+      session.folderInfos.forEach((f) => {
+        initialConfigs.set(f.name, {
+          repoName: f.name,
+          private: globalPrivate,
+          description: "",
+          topics: f.detectedTech?.topics ?? [],
+          license: "MIT",
+          generateReadme: true,
+          generateGitignore: true,
+        });
+      });
+      setRepoConfigs(initialConfigs);
+      setStep("preview");
+    } catch (err) {
+      setExtractError(err instanceof Error ? err.message : "Failed to extract archive");
+    } finally {
+      setIsExtracting(false);
+    }
+  }, [selectedFiles, globalPrivate]);
 
   // ── Step 4 -> Step 5: Forge Repositories ─────────────────────────────────────
-  const handleUpload = useCallback(() => {
+  const handleUpload = useCallback(async () => {
     if (!sessionId || selectedFolders.size === 0) return;
 
     const repoConfigsObj: Record<string, FolderRepoConfig> = {};
@@ -230,6 +275,33 @@ function GithubUploaderApp() {
       if (cfg) {
         repoConfigsObj[folder] = cfg;
       }
+    }
+
+    if (customToken && clientSession) {
+      setStep("forge");
+      setIsClientForging(true);
+      try {
+        const finalState = await forgeRepositoriesClient({
+          token: customToken,
+          session: clientSession,
+          selectedFolders: [...selectedFolders],
+          repoConfigs: repoConfigsObj,
+          globalIsPrivate: globalPrivate,
+          globalDescription,
+          onProgress: (state) => setClientJob(state),
+        });
+        setResults(finalState.results as RepoResult[]);
+        qClient.invalidateQueries({ queryKey: getListRecentReposQueryKey() });
+      } catch (err) {
+        toast({
+          title: "Forge failed",
+          description: err instanceof Error ? err.message : "Failed to push repositories",
+          variant: "destructive",
+        });
+      } finally {
+        setIsClientForging(false);
+      }
+      return;
     }
 
     uploadMutation.mutate(
@@ -251,12 +323,15 @@ function GithubUploaderApp() {
         },
       }
     );
-  }, [sessionId, selectedFolders, repoConfigs, globalPrivate, globalDescription, uploadMutation]);
+  }, [sessionId, selectedFolders, repoConfigs, globalPrivate, globalDescription, customToken, clientSession, qClient, toast, uploadMutation]);
 
   const handleReset = useCallback(() => {
     setStep("drop");
     setSelectedFiles([]);
     setSessionId("");
+    setClientSession(null);
+    setClientJob(null);
+    setExtractError(null);
     setFolders([]);
     setSelectedFolders(new Set());
     setRepoConfigs(new Map());
@@ -264,9 +339,8 @@ function GithubUploaderApp() {
     setResults([]);
     setActiveJobId(null);
     localStorage.removeItem(JOB_STORAGE_KEY);
-    previewMutation.reset();
     uploadMutation.reset();
-  }, [previewMutation, uploadMutation]);
+  }, [uploadMutation]);
 
   const toggleFolderSelection = (name: string) => {
     setSelectedFolders((prev) => {
@@ -336,8 +410,19 @@ function GithubUploaderApp() {
 
   const handleOpenFilePreview = (folderName: string, filePath: string) => {
     setPreviewFileState({ folderName, filePath, isOpen: true });
-    filePreviewMutation.reset();
-    filePreviewMutation.mutate({ data: { sessionId, folderName, filePath } });
+    if (!clientSession) {
+      setClientFilePreview({ data: null, error: "Archive session not loaded" });
+      return;
+    }
+    try {
+      const preview = getFilePreviewClient(clientSession, folderName, filePath);
+      setClientFilePreview({ data: preview, error: null });
+    } catch (err) {
+      setClientFilePreview({
+        data: null,
+        error: err instanceof Error ? err.message : "Failed to load file preview",
+      });
+    }
   };
 
   const handleCopyUrl = (url: string, index: number) => {
@@ -348,7 +433,7 @@ function GithubUploaderApp() {
   };
 
   const handleCopyAllUrls = () => {
-    const activeResults = jobData?.results ?? results;
+    const activeResults = clientJob?.results ?? jobData?.results ?? results;
     const urls = activeResults.filter((r) => r.success && r.repoUrl).map((r) => r.repoUrl).join("\n");
     if (urls) {
       navigator.clipboard.writeText(urls);
@@ -359,7 +444,7 @@ function GithubUploaderApp() {
   };
 
   const handleOpenAllInGithub = () => {
-    const activeResults = jobData?.results ?? results;
+    const activeResults = clientJob?.results ?? jobData?.results ?? results;
     activeResults.forEach((r) => {
       if (r.success && r.repoUrl) {
         window.open(r.repoUrl, "_blank");
@@ -372,7 +457,7 @@ function GithubUploaderApp() {
     const trimmed = tokenInput.trim();
     if (!trimmed) return;
     sessionStorage.setItem(TOKEN_STORAGE_KEY, trimmed);
-    setHasCustomToken(true);
+    setCustomToken(trimmed);
     setTokenInput("");
     setIsTokenModalOpen(false);
     qClient.invalidateQueries({ queryKey: getGetGithubUserQueryKey() });
@@ -382,7 +467,7 @@ function GithubUploaderApp() {
 
   const handleDisconnectToken = () => {
     sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-    setHasCustomToken(false);
+    setCustomToken(null);
     qClient.invalidateQueries({ queryKey: getGetGithubUserQueryKey() });
     qClient.invalidateQueries({ queryKey: getListRecentReposQueryKey() });
   };
@@ -398,7 +483,7 @@ function GithubUploaderApp() {
   }
 
   // Derived progress values
-  const currentJob = jobData ?? {
+  const currentJob = clientJob ?? jobData ?? {
     status: activeJobId ? "running" : "done",
     progress: {
       total: selectedFolders.size,
@@ -630,21 +715,21 @@ function GithubUploaderApp() {
                     )}
                   </div>
 
-                  {previewMutation.isError && (
+                  {extractError && (
                     <div className="flex items-start gap-2.5 text-[13px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
                       <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" strokeWidth={1.5} />
-                      <span>{(previewMutation.error as any)?.message ?? "Failed to extract archive"}</span>
+                      <span>{extractError}</span>
                     </div>
                   )}
 
                   {selectedFiles.length > 0 && (
                     <Button
                       onClick={handlePreview}
-                      disabled={previewMutation.isPending}
+                      disabled={isExtracting}
                       className="w-full h-11 text-[14px] font-medium rounded-lg bg-[#8b5cf6] hover:bg-[#7c3aed] text-white enabled:active:scale-[0.96] transition-[background-color,transform] duration-150 ease-out"
                       data-testid="preview-btn"
                     >
-                      {previewMutation.isPending ? (
+                      {isExtracting ? (
                         <span className="flex items-center gap-2">
                           <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.5} />
                           Scanning archives…
@@ -1128,11 +1213,11 @@ function GithubUploaderApp() {
                     </Button>
                     <Button
                       onClick={() => (user ? handleUpload() : setIsTokenModalOpen(true))}
-                      disabled={uploadMutation.isPending}
+                      disabled={uploadMutation.isPending || isClientForging}
                       className="flex-1 h-10 text-[14px] font-medium rounded-lg bg-[#8b5cf6] hover:bg-[#7c3aed] text-white enabled:active:scale-[0.96] transition-[background-color,transform] duration-150 tabular-nums"
                       data-testid="upload-btn"
                     >
-                      {uploadMutation.isPending ? (
+                      {uploadMutation.isPending || isClientForging ? (
                         <span className="flex items-center gap-2">
                           <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.5} />
                           Starting job…
@@ -1384,29 +1469,24 @@ function GithubUploaderApp() {
                   </div>
 
                   <div className="p-5 overflow-y-auto overscroll-contain flex-1 bg-[#09090b] font-mono text-[12px]">
-                    {filePreviewMutation.isPending ? (
-                      <div className="flex items-center justify-center py-12 text-[#a1a1aa]">
-                        <Loader2 className="w-5 h-5 animate-spin mr-2 text-[#8b5cf6]" strokeWidth={1.5} />
-                        Loading file preview…
-                      </div>
-                    ) : filePreviewMutation.isError ? (
+                    {clientFilePreview.error ? (
                       <div className="text-red-400 p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
-                        Failed to load file preview.
+                        {clientFilePreview.error}
                       </div>
-                    ) : filePreviewMutation.data ? (
-                      filePreviewMutation.data.isBinary ? (
+                    ) : clientFilePreview.data ? (
+                      clientFilePreview.data.isBinary ? (
                         <div className="text-center py-10 text-[#a1a1aa]">
                           <FileText className="w-8 h-8 mx-auto mb-2 text-[#71717a]" strokeWidth={1.5} />
                           <p className="font-medium text-[14px] text-[#f4f4f5]">
-                            {filePreviewMutation.data.content}
+                            {clientFilePreview.data.content}
                           </p>
                           <p className="text-[12px] text-[#71717a] mt-1 tabular-nums">
-                            File size: {formatBytes(filePreviewMutation.data.size)}
+                            File size: {formatBytes(clientFilePreview.data.size)}
                           </p>
                         </div>
                       ) : (
                         <pre className="whitespace-pre-wrap break-all leading-relaxed text-[#d4d4d8]">
-                          {filePreviewMutation.data.content}
+                          {clientFilePreview.data.content}
                         </pre>
                       )
                     ) : null}
