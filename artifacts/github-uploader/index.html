@@ -3,8 +3,119 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
-    <title>GitHub Repo Creator</title>
+    
+    <!-- Primary SEO Metadata -->
+    <title>RepoForge — Bulk GitHub Repository Creator &amp; Automated Archive Uploader</title>
+    <meta name="title" content="RepoForge — Bulk GitHub Repository Creator &amp; Automated Archive Uploader" />
+    <meta name="description" content="RepoForge allows developers to preview, rename, batch create, and upload local project ZIP archives directly to GitHub as public or private repositories without local Git commands." />
+    <meta name="keywords" content="GitHub, repository creator, zip to github, bulk repo creator, upload project to github, github automation, developer tools" />
+    <meta name="author" content="RepoForge" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://repoforge.dev/" />
+
+    <!-- Favicon & Icon Configurations -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="shortcut icon" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+
+    <!-- Open Graph / Facebook (SEO & Social Sharing) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://repoforge.dev/" />
+    <meta property="og:title" content="RepoForge — Bulk GitHub Repository Creator &amp; Automated Archive Uploader" />
+    <meta property="og:description" content="Turn local project folders or ZIP archives into GitHub repositories in seconds. Batch upload, set visibility, and publish automatically." />
+    <meta property="og:image" content="https://repoforge.dev/opengraph.jpg" />
+    <meta property="og:site_name" content="RepoForge" />
+
+    <!-- Twitter Card Metadata -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://repoforge.dev/" />
+    <meta name="twitter:title" content="RepoForge — Bulk GitHub Repository Creator &amp; Automated Archive Uploader" />
+    <meta name="twitter:description" content="Turn local project folders or ZIP archives into GitHub repositories in seconds. Batch upload, set visibility, and publish automatically." />
+    <meta name="twitter:image" content="https://repoforge.dev/opengraph.jpg" />
+
+    <!-- AEO & GEO Structured Data (Schema.org WebApplication + FAQPage + HowTo) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebApplication",
+          "@id": "https://repoforge.dev/#software",
+          "name": "RepoForge",
+          "url": "https://repoforge.dev/",
+          "applicationCategory": "DeveloperApplication",
+          "operatingSystem": "Any (Web Browser)",
+          "description": "An automated web application for extracting, previewing, renaming, and bulk creating GitHub repositories from local ZIP archives.",
+          "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+          },
+          "featureList": [
+            "ZIP archive extraction",
+            "Bulk GitHub repository creation",
+            "Public and Private repo toggling",
+            "Direct GitHub REST API commit stream",
+            "Repository folder renaming"
+          ]
+        },
+        {
+          "@type": "FAQPage",
+          "@id": "https://repoforge.dev/#faq",
+          "mainEntity": [
+            {
+              "@type": "Question",
+              "name": "How do I upload a ZIP file directly to GitHub as a repository?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Upload your ZIP file to RepoForge, select the extracted project folders, choose public or private visibility, and click Create Repos. RepoForge automatically creates the repository on GitHub and commits all files."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Do I need Git installed on my computer to use RepoForge?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "No, RepoForge communicates directly with the GitHub REST API, so you do not need Git CLI installed or configured on your machine."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Can I create private GitHub repositories using RepoForge?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes, RepoForge allows you to set repository visibility to either Public or Private for each folder before publishing."
+              }
+            }
+          ]
+        },
+        {
+          "@type": "HowTo",
+          "@id": "https://repoforge.dev/#howto",
+          "name": "How to Bulk Create GitHub Repositories from a ZIP Archive",
+          "step": [
+            {
+              "@type": "HowToStep",
+              "name": "Upload Archive",
+              "text": "Drag and drop your ZIP file containing one or more project folders into RepoForge."
+            },
+            {
+              "@type": "HowToStep",
+              "name": "Select & Rename Folders",
+              "text": "Preview extracted folders, rename repository names, set descriptions, and choose public or private visibility."
+            },
+            {
+              "@type": "HowToStep",
+              "name": "Publish to GitHub",
+              "text": "Click Create Repos to automatically build the repositories on GitHub and stream file commits."
+            }
+          ]
+        }
+      ]
+    }
+    </script>
+
+    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">

@@ -1,0 +1,19 @@
+User-agent: *
+Allow: /
+Sitemap: https://repoforge.dev/sitemap.xml
+
+# AI Engine Crawlers (AEO / GEO Optimization)
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /

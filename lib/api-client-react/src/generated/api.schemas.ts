@@ -6,13 +6,32 @@
  * OpenAPI spec version: 0.1.0
  */
 export interface PreviewArchiveBody {
-  /** Archive file to extract (zip, tar, tar.gz, tgz, tar.bz2, tar.xz) */
-  file: Blob;
+  /** Archive file to extract */
+  file?: Blob;
+  /** Multiple archive files */
+  files?: Blob[];
+}
+
+export interface TechDetection {
+  framework: string;
+  language: string;
+  topics: string[];
+  badges: string[];
+  recommendedGitignore: string;
+}
+
+export interface FileTreeNode {
+  path: string;
+  size: number;
+  type: "file" | "directory";
 }
 
 export interface FolderInfo {
   name: string;
   fileCount: number;
+  totalSizeBytes: number;
+  detectedTech: TechDetection;
+  files: FileTreeNode[];
 }
 
 export interface PreviewResult {
@@ -21,16 +40,39 @@ export interface PreviewResult {
   archiveName: string;
 }
 
-/**
- * Optional map of folderName → custom repo name. Defaults to folder name.
- */
+export interface FilePreviewBody {
+  sessionId: string;
+  folderName: string;
+  filePath: string;
+}
+
+export interface FilePreviewResult {
+  path: string;
+  content: string;
+  size: number;
+  isBinary: boolean;
+}
+
+export type LicenseType = "MIT" | "Apache-2.0" | "GPL-3.0" | "BSD-3-Clause" | "None";
+
+export interface FolderRepoConfig {
+  repoName?: string;
+  private?: boolean;
+  description?: string;
+  topics?: string[];
+  license?: LicenseType;
+  generateReadme?: boolean;
+  generateGitignore?: boolean;
+}
+
 export type UploadSelectedBodyRepoNameOverrides = { [key: string]: string };
+export type UploadSelectedBodyRepoConfigs = { [key: string]: FolderRepoConfig };
 
 export interface UploadSelectedBody {
   sessionId: string;
   selectedFolders: string[];
-  /** Optional map of folderName → custom repo name. Defaults to folder name. */
   repoNameOverrides?: UploadSelectedBodyRepoNameOverrides;
+  repoConfigs?: UploadSelectedBodyRepoConfigs;
   private?: boolean;
   description?: string;
 }
@@ -56,6 +98,8 @@ export const JobStateStatus = {
   failed: "failed",
 } as const;
 
+export type RepoUploadStatus = "queued" | "uploading" | "done" | "failed";
+
 export interface RepoUploadResult {
   folderName: string;
   repoName: string;
@@ -63,6 +107,8 @@ export interface RepoUploadResult {
   filesUploaded: number;
   success: boolean;
   error?: string;
+  status?: RepoUploadStatus;
+  detectedTech?: TechDetection;
 }
 
 export interface JobState {

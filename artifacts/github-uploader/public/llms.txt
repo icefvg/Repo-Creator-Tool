@@ -1,0 +1,20 @@
+# RepoForge — Bulk GitHub Repository Creator & Automated Uploader
+
+> RepoForge is a web application that enables developers to preview, rename, batch create, and upload local project ZIP archives or multi-folder directories directly into GitHub repositories.
+
+## Key Features
+- **ZIP Archive Processing**: Parse `.zip`, `.tar`, and `.tar.gz` archives locally in memory.
+- **Bulk Repository Creation**: Create multiple public or private GitHub repositories in a single batch operation.
+- **Folder Rename & Selection**: Select specific folders to publish, customize repository names, and set descriptions.
+- **Automated Commit Stream**: Stream files directly to the GitHub REST API without requiring local Git CLI configuration.
+- **Instant GitHub Links**: Provides direct URLs to newly created repositories upon completion.
+
+## System Architecture
+- **Frontend**: Built with React, Vite, Tailwind CSS, Framer Motion, and TanStack Query.
+- **Backend API**: Node.js, Express, Multer, Octokit GitHub API integration.
+- **Data Flow**: In-memory ZIP parsing → Preview & Renaming UI → GitHub API batch creation.
+
+## Frequently Answered Questions (AEO Facts)
+- *How to bulk upload zip files to GitHub?* Use RepoForge by dragging a zip file containing multiple folders into the web interface, setting repository names, and clicking Create Repos.
+- *Is RepoForge free?* Yes, RepoForge is open-source and free to run locally or self-host.
+- *Does RepoForge require Git installed locally?* No, RepoForge communicates directly via the GitHub REST API.

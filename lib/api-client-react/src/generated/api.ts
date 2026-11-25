@@ -18,6 +18,8 @@ import type {
 
 import type {
   ErrorResponse,
+  FilePreviewBody,
+  FilePreviewResult,
   GithubRepo,
   GithubUser,
   HealthStatus,
@@ -113,7 +115,7 @@ export function useHealthCheck<
 }
 
 /**
- * Accepts an archive file (zip, tar, tar.gz, tgz, tar.bz2), extracts it in memory, and returns the list of top-level subfolders with file counts. Returns a sessionId to reference the temp data for upload.
+ * Accepts archive file(s) (zip, tar, tar.gz, tgz, tar.bz2), extracts them in memory, and returns subfolders with tech detection and file trees.
  * @summary Preview archive contents
  */
 export const getPreviewArchiveUrl = () => {
@@ -125,7 +127,14 @@ export const previewArchive = async (
   options?: RequestInit,
 ): Promise<PreviewResult> => {
   const formData = new FormData();
-  formData.append(`file`, previewArchiveBody.file);
+  if (previewArchiveBody.file) {
+    formData.append(`file`, previewArchiveBody.file);
+  }
+  if (previewArchiveBody.files && previewArchiveBody.files.length > 0) {
+    for (const f of previewArchiveBody.files) {
+      formData.append(`files`, f);
+    }
+  }
 
   return customFetch<PreviewResult>(getPreviewArchiveUrl(), {
     ...options,
@@ -199,6 +208,62 @@ export const usePreviewArchive = <
   TContext
 > => {
   return useMutation(getPreviewArchiveMutationOptions(options));
+};
+
+/**
+ * @summary Get content preview for a single file in archive
+ */
+export const getFilePreviewUrl = () => {
+  return `/api/github/file-preview`;
+};
+
+export const getFilePreview = async (
+  filePreviewBody: FilePreviewBody,
+  options?: RequestInit,
+): Promise<FilePreviewResult> => {
+  return customFetch<FilePreviewResult>(getFilePreviewUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(filePreviewBody),
+  });
+};
+
+export const useGetFilePreview = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof getFilePreview>>,
+    TError,
+    { data: BodyType<FilePreviewBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof getFilePreview>>,
+  TError,
+  { data: BodyType<FilePreviewBody> },
+  TContext
+> => {
+  const mutationKey = ["getFilePreview"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof getFilePreview>>,
+    { data: BodyType<FilePreviewBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+    return getFilePreview(data, requestOptions);
+  };
+
+  return useMutation({ mutationFn, ...mutationOptions });
 };
 
 /**

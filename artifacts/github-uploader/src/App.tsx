@@ -4,75 +4,135 @@ import { QueryClient, QueryClientProvider, useQueryClient, useQuery } from "@tan
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
-import { motion, AnimatePresence, useMotionValue, useTransform } from "framer-motion";
+import { MotionConfig, motion, AnimatePresence } from "framer-motion";
 import {
   UploadCloud, CheckCircle2, FileArchive, Lock, Globe, Github,
   AlertCircle, Loader2, ExternalLink, FolderOpen, ArrowRight,
   RotateCcw, PackageOpen, X, ChevronRight, Pencil, WifiOff,
+  Copy, Check, Code2, Tag, Shield, FileText, ChevronDown, Eye,
+  GitBranch,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch as SwitchUI } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { useToast } from "@/hooks/use-toast";
+
+import LandingPage from "@/components/LandingPage";
 
 import {
   useGetGithubUser, getGetGithubUserQueryKey,
   useListRecentRepos, getListRecentReposQueryKey,
-  usePreviewArchive, useUploadSelectedFolders,
-  getJob,
+  usePreviewArchive, useUploadSelectedFolders, useGetFilePreview,
+  getJob, setAuthTokenGetter,
+  FolderInfo, TechDetection, LicenseType, FolderRepoConfig,
 } from "@workspace/api-client-react";
+
+const TOKEN_STORAGE_KEY = "repoforge_gh_token";
+setAuthTokenGetter(() => {
+  try {
+    return sessionStorage.getItem(TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+});
 
 const queryClient = new QueryClient();
 const ACCEPTED_FORMATS = ".zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz2,.tar.xz,.txz";
 const JOB_STORAGE_KEY = "repoforge_active_job";
+const EASE_OUT = [0.2, 0, 0, 1] as const;
 
-const spring = { type: "spring", stiffness: 320, damping: 28 } as const;
-const fadeUp = { hidden: { opacity: 0, y: 18 }, visible: { opacity: 1, y: 0, transition: spring } };
-const stagger = { hidden: {}, visible: { transition: { staggerChildren: 0.07, delayChildren: 0.1 } } };
+type Step = "drop" | "preview" | "detect" | "configure" | "forge";
 
-type Step = "drop" | "select" | "progress" | "result";
-interface FolderInfo { name: string; fileCount: number; }
-interface RepoResult { folderName: string; repoName: string; repoUrl: string; filesUploaded: number; success: boolean; error?: string; }
+interface RepoResult {
+  folderName: string;
+  repoName: string;
+  repoUrl: string;
+  filesUploaded: number;
+  success: boolean;
+  error?: string;
+  status?: "queued" | "uploading" | "done" | "failed";
+  detectedTech?: TechDetection;
+}
 
 const STEPS: { id: Step; label: string }[] = [
   { id: "drop", label: "Upload" },
-  { id: "select", label: "Select" },
-  { id: "progress", label: "Creating" },
-  { id: "result", label: "Done" },
+  { id: "preview", label: "Preview" },
+  { id: "detect", label: "Detect" },
+  { id: "configure", label: "Configure" },
+  { id: "forge", label: "Forge" },
 ];
 
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
 function GithubUploaderApp() {
+  const { toast } = useToast();
   const qClient = useQueryClient();
   const { data: user, isLoading: isUserLoading, error: userError } =
-    useGetGithubUser(undefined, { query: { queryKey: getGetGithubUserQueryKey() } });
-  const { data: repos, isLoading: isReposLoading } = useListRecentRepos(undefined, {
+    useGetGithubUser({ query: { queryKey: getGetGithubUserQueryKey() } });
+  const { data: repos, isLoading: isReposLoading } = useListRecentRepos({
     query: { queryKey: getListRecentReposQueryKey(), enabled: !!user },
   });
 
   const previewMutation = usePreviewArchive();
   const uploadMutation = useUploadSelectedFolders();
+  const filePreviewMutation = useGetFilePreview();
+
+  const [showLanding, setShowLanding] = useState(true);
+  const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
+  const [tokenInput, setTokenInput] = useState("");
+  const [hasCustomToken, setHasCustomToken] = useState(() => {
+    try {
+      return Boolean(sessionStorage.getItem(TOKEN_STORAGE_KEY));
+    } catch {
+      return false;
+    }
+  });
 
   const [step, setStep] = useState<Step>("drop");
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [sessionId, setSessionId] = useState("");
   const [archiveName, setArchiveName] = useState("");
   const [folders, setFolders] = useState<FolderInfo[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
-  const [repoNameOverrides, setRepoNameOverrides] = useState<Map<string, string>>(new Map());
-  const [isPrivate, setIsPrivate] = useState(false);
-  const [description, setDescription] = useState("");
+
+  // Per-folder Repo Config
+  const [repoConfigs, setRepoConfigs] = useState<Map<string, FolderRepoConfig>>(new Map());
+
+  // Global defaults
+  const [globalPrivate, setGlobalPrivate] = useState(false);
+  const [globalDescription, setGlobalDescription] = useState("");
+  const [globalLicense, setGlobalLicense] = useState<LicenseType>("MIT");
+
+  // File Preview Modal
+  const [previewFileState, setPreviewFileState] = useState<{
+    folderName: string;
+    filePath: string;
+    isOpen: boolean;
+  }>({ folderName: "", filePath: "", isOpen: false });
+
+  // Expanded folders in tree view
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+
+  // Clipboard copies
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [copiedAll, setCopiedAll] = useState(false);
+
+  // Active Job & Results
   const [results, setResults] = useState<RepoResult[]>([]);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const mouseX = useMotionValue(0);
-  const mouseY = useMotionValue(0);
-  const parallaxX = useTransform(mouseX, [-15, 15], [-6, 6]);
-  const parallaxY = useTransform(mouseY, [-15, 15], [-6, 6]);
 
-  // ── Job polling ──────────────────────────────────────────────────────────────
+  // ── Job Polling ──────────────────────────────────────────────────────────────
   const { data: jobData } = useQuery({
     queryKey: ["job", activeJobId],
     queryFn: () => getJob(activeJobId!),
@@ -80,24 +140,22 @@ function GithubUploaderApp() {
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       if (status === "done" || status === "failed") return false;
-      return 1500;
+      return 1200;
     },
     refetchIntervalInBackground: true,
   });
 
-  // Transition to result when job finishes
+  // Transition job completion
   useEffect(() => {
     if (!jobData) return;
     if (jobData.status === "done" || jobData.status === "failed") {
       setResults(jobData.results as RepoResult[]);
-      setStep("result");
       localStorage.removeItem(JOB_STORAGE_KEY);
-      setActiveJobId(null);
       qClient.invalidateQueries({ queryKey: getListRecentReposQueryKey() });
     }
   }, [jobData?.status]);
 
-  // Restore in-progress job on page load
+  // Restore in-progress job on load
   useEffect(() => {
     const saved = localStorage.getItem(JOB_STORAGE_KEY);
     if (saved) {
@@ -105,23 +163,19 @@ function GithubUploaderApp() {
         const { jobId } = JSON.parse(saved) as { jobId: string };
         if (jobId) {
           setActiveJobId(jobId);
-          setStep("progress");
+          setStep("forge");
         }
-      } catch { localStorage.removeItem(JOB_STORAGE_KEY); }
+      } catch {
+        localStorage.removeItem(JOB_STORAGE_KEY);
+      }
     }
   }, []);
 
-  // ── Parallax ─────────────────────────────────────────────────────────────────
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const { left, top, width, height } = e.currentTarget.getBoundingClientRect();
-    mouseX.set((e.clientX - left - width / 2) / 20);
-    mouseY.set((e.clientY - top - height / 2) / 20);
-  }, [mouseX, mouseY]);
-
-  // ── File handling ─────────────────────────────────────────────────────────────
-  const handleFileSelect = useCallback((file: File) => {
-    setSelectedFile(file);
-    setStep("drop");
+  // ── File Selection ───────────────────────────────────────────────────────────
+  const handleFileSelect = useCallback((files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    if (fileArray.length === 0) return;
+    setSelectedFiles(fileArray);
     setResults([]);
     setSelectedFolders(new Set());
   }, []);
@@ -129,50 +183,84 @@ function GithubUploaderApp() {
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) handleFileSelect(file);
+    if (e.dataTransfer.files?.length) {
+      handleFileSelect(e.dataTransfer.files);
+    }
   }, [handleFileSelect]);
 
+  // ── Step 1 -> Step 2: Scan & Preview Archive ─────────────────────────────────
   const handlePreview = useCallback(() => {
-    if (!selectedFile) return;
-    previewMutation.mutate({ data: { file: selectedFile } }, {
-      onSuccess: (data) => {
-        setSessionId(data.sessionId);
-        setArchiveName(data.archiveName);
-        setFolders(data.folders);
-        setSelectedFolders(new Set(data.folders.map(f => f.name)));
-        setRepoNameOverrides(new Map(data.folders.map(f => [f.name, f.name])));
-        setStep("select");
-      },
-    });
-  }, [selectedFile, previewMutation]);
+    if (selectedFiles.length === 0) return;
+    const bodyData = selectedFiles.length === 1 ? { file: selectedFiles[0] } : { files: selectedFiles };
+    previewMutation.mutate(
+      { data: bodyData },
+      {
+        onSuccess: (data) => {
+          setSessionId(data.sessionId);
+          setArchiveName(data.archiveName);
+          setFolders(data.folders);
+          setSelectedFolders(new Set(data.folders.map((f) => f.name)));
 
+          const initialConfigs = new Map<string, FolderRepoConfig>();
+          data.folders.forEach((f) => {
+            initialConfigs.set(f.name, {
+              repoName: f.name,
+              private: globalPrivate,
+              description: "",
+              topics: f.detectedTech?.topics ?? [],
+              license: "MIT",
+              generateReadme: true,
+              generateGitignore: true,
+            });
+          });
+          setRepoConfigs(initialConfigs);
+          setStep("preview");
+        },
+      }
+    );
+  }, [selectedFiles, globalPrivate, previewMutation]);
+
+  // ── Step 4 -> Step 5: Forge Repositories ─────────────────────────────────────
   const handleUpload = useCallback(() => {
     if (!sessionId || selectedFolders.size === 0) return;
-    const overrides: Record<string, string> = {};
-    for (const [folder, name] of repoNameOverrides) {
-      if (name.trim() && name.trim() !== folder) overrides[folder] = name.trim();
+
+    const repoConfigsObj: Record<string, FolderRepoConfig> = {};
+    for (const folder of selectedFolders) {
+      const cfg = repoConfigs.get(folder);
+      if (cfg) {
+        repoConfigsObj[folder] = cfg;
+      }
     }
-    uploadMutation.mutate({
-      data: { sessionId, selectedFolders: [...selectedFolders], repoNameOverrides: overrides, private: isPrivate, description },
-    }, {
-      onSuccess: (data) => {
-        const jobId = data.jobId;
-        localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify({ jobId }));
-        setActiveJobId(jobId);
-        setStep("progress");
+
+    uploadMutation.mutate(
+      {
+        data: {
+          sessionId,
+          selectedFolders: [...selectedFolders],
+          repoConfigs: repoConfigsObj,
+          private: globalPrivate,
+          description: globalDescription,
+        },
       },
-    });
-  }, [sessionId, selectedFolders, repoNameOverrides, isPrivate, description, uploadMutation]);
+      {
+        onSuccess: (data) => {
+          const jobId = data.jobId;
+          localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify({ jobId }));
+          setActiveJobId(jobId);
+          setStep("forge");
+        },
+      }
+    );
+  }, [sessionId, selectedFolders, repoConfigs, globalPrivate, globalDescription, uploadMutation]);
 
   const handleReset = useCallback(() => {
     setStep("drop");
-    setSelectedFile(null);
+    setSelectedFiles([]);
     setSessionId("");
     setFolders([]);
     setSelectedFolders(new Set());
-    setRepoNameOverrides(new Map());
-    setDescription("");
+    setRepoConfigs(new Map());
+    setGlobalDescription("");
     setResults([]);
     setActiveJobId(null);
     localStorage.removeItem(JOB_STORAGE_KEY);
@@ -180,496 +268,1319 @@ function GithubUploaderApp() {
     uploadMutation.reset();
   }, [previewMutation, uploadMutation]);
 
-  const handleRename = (folderName: string, value: string) => {
-    setRepoNameOverrides(prev => { const m = new Map(prev); m.set(folderName, value); return m; });
-  };
-  const toggleFolder = (name: string) => {
-    setSelectedFolders(prev => { const s = new Set(prev); s.has(name) ? s.delete(name) : s.add(name); return s; });
+  const toggleFolderSelection = (name: string) => {
+    setSelectedFolders((prev) => {
+      const s = new Set(prev);
+      s.has(name) ? s.delete(name) : s.add(name);
+      return s;
+    });
   };
 
-  const stepIndex = STEPS.findIndex(s => s.id === step);
+  const toggleFolderTreeExpand = (name: string) => {
+    setExpandedFolders((prev) => {
+      const s = new Set(prev);
+      s.has(name) ? s.delete(name) : s.add(name);
+      return s;
+    });
+  };
 
-  // ── Loading / error states ────────────────────────────────────────────────────
-  if (isUserLoading) {
+  const handleUpdateConfig = (folderName: string, updates: Partial<FolderRepoConfig>) => {
+    setRepoConfigs((prev) => {
+      const m = new Map(prev);
+      const existing = m.get(folderName) ?? { repoName: folderName };
+      m.set(folderName, { ...existing, ...updates });
+      return m;
+    });
+  };
+
+  const handleAddTopic = (folderName: string, topic: string) => {
+    const clean = topic.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+    if (!clean) return;
+    const cfg = repoConfigs.get(folderName);
+    const existing = cfg?.topics ?? [];
+    if (!existing.includes(clean)) {
+      handleUpdateConfig(folderName, { topics: [...existing, clean] });
+    }
+  };
+
+  const handleRemoveTopic = (folderName: string, topicToRemove: string) => {
+    const cfg = repoConfigs.get(folderName);
+    const existing = cfg?.topics ?? [];
+    handleUpdateConfig(
+      folderName,
+      { topics: existing.filter((t) => t !== topicToRemove) }
+    );
+  };
+
+  const handleApplyGlobalPrivate = (isPriv: boolean) => {
+    setGlobalPrivate(isPriv);
+    setRepoConfigs((prev) => {
+      const m = new Map(prev);
+      m.forEach((cfg, k) => {
+        m.set(k, { ...cfg, private: isPriv });
+      });
+      return m;
+    });
+  };
+
+  const handleApplyGlobalLicense = (license: LicenseType) => {
+    setGlobalLicense(license);
+    setRepoConfigs((prev) => {
+      const m = new Map(prev);
+      m.forEach((cfg, k) => {
+        m.set(k, { ...cfg, license });
+      });
+      return m;
+    });
+  };
+
+  const handleOpenFilePreview = (folderName: string, filePath: string) => {
+    setPreviewFileState({ folderName, filePath, isOpen: true });
+    filePreviewMutation.reset();
+    filePreviewMutation.mutate({ data: { sessionId, folderName, filePath } });
+  };
+
+  const handleCopyUrl = (url: string, index: number) => {
+    navigator.clipboard.writeText(url);
+    setCopiedIndex(index);
+    toast({ title: "Copied", description: "Repository URL copied to clipboard." });
+    setTimeout(() => setCopiedIndex(null), 2000);
+  };
+
+  const handleCopyAllUrls = () => {
+    const activeResults = jobData?.results ?? results;
+    const urls = activeResults.filter((r) => r.success && r.repoUrl).map((r) => r.repoUrl).join("\n");
+    if (urls) {
+      navigator.clipboard.writeText(urls);
+      setCopiedAll(true);
+      toast({ title: "Copied all URLs", description: "All repository URLs copied to clipboard." });
+      setTimeout(() => setCopiedAll(false), 2000);
+    }
+  };
+
+  const handleOpenAllInGithub = () => {
+    const activeResults = jobData?.results ?? results;
+    activeResults.forEach((r) => {
+      if (r.success && r.repoUrl) {
+        window.open(r.repoUrl, "_blank");
+      }
+    });
+  };
+
+  const handleSaveToken = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = tokenInput.trim();
+    if (!trimmed) return;
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, trimmed);
+    setHasCustomToken(true);
+    setTokenInput("");
+    setIsTokenModalOpen(false);
+    qClient.invalidateQueries({ queryKey: getGetGithubUserQueryKey() });
+    qClient.invalidateQueries({ queryKey: getListRecentReposQueryKey() });
+    toast({ title: "Token saved", description: "Verifying GitHub account…" });
+  };
+
+  const handleDisconnectToken = () => {
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    setHasCustomToken(false);
+    qClient.invalidateQueries({ queryKey: getGetGithubUserQueryKey() });
+    qClient.invalidateQueries({ queryKey: getListRecentReposQueryKey() });
+  };
+
+  const stepIndex = STEPS.findIndex((s) => s.id === step);
+
+  if (isUserLoading && !showLanding) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}>
-          <Loader2 className="w-8 h-8 text-primary" />
-        </motion.div>
+      <div className="min-h-screen bg-[#09090b] flex items-center justify-center">
+        <Loader2 className="w-6 h-6 text-[#8b5cf6] animate-spin" strokeWidth={1.5} />
       </div>
     );
   }
-  if (userError || !user) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-4">
-        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
-          className="bg-card border border-border p-8 rounded-2xl max-w-md w-full text-center">
-          <AlertCircle className="w-12 h-12 text-destructive mx-auto mb-4" />
-          <h2 className="text-xl font-bold mb-2">GitHub Token Missing</h2>
-          <p className="text-muted-foreground">Configure your GITHUB_TOKEN to use RepoForge.</p>
-        </motion.div>
-      </div>
-    );
-  }
 
-  // Progress derived values
-  const progressTotal = jobData?.progress.total ?? (activeJobId ? selectedFolders.size : 0);
-  const progressDone = jobData?.progress.completed ?? 0;
-  const progressPct = progressTotal > 0 ? Math.round((progressDone / progressTotal) * 100) : 0;
-  const currentRepo = jobData?.progress.currentRepo;
-  const currentAction = jobData?.progress.currentAction;
-  const completedResults = (jobData?.results ?? []) as RepoResult[];
+  // Derived progress values
+  const currentJob = jobData ?? {
+    status: activeJobId ? "running" : "done",
+    progress: {
+      total: selectedFolders.size,
+      completed: 0,
+      currentRepo: undefined as string | undefined,
+      currentAction: undefined as string | undefined,
+    },
+    results: results,
+  };
+  const progressTotal = currentJob.progress.total || selectedFolders.size || 1;
+  const progressDone = currentJob.progress.completed || 0;
+  const progressPct = Math.min(100, Math.round((progressDone / progressTotal) * 100));
+  const currentRepoName = currentJob.progress.currentRepo;
+  const currentActionText = currentJob.progress.currentAction;
+  const displayResults = (currentJob.results ?? results) as RepoResult[];
+
+  if (showLanding) {
+    return <LandingPage onLaunchApp={() => setShowLanding(false)} />;
+  }
 
   return (
-    <div className="min-h-screen bg-background text-foreground font-sans">
-      {/* Ambient glows */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        <div className="absolute top-[-15%] left-[-5%] w-[45%] h-[45%] bg-primary/8 blur-[140px] rounded-full" />
-        <div className="absolute bottom-[-15%] right-[-5%] w-[40%] h-[40%] bg-violet-500/6 blur-[140px] rounded-full" />
-      </div>
+    <MotionConfig reducedMotion="user">
+      <div className="min-h-screen bg-[#09090b] text-[#f4f4f5] font-sans antialiased overflow-x-clip selection:bg-[#8b5cf6]/30 selection:text-white">
+        {/* Top Workspace Header */}
+        <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#09090b]/85 backdrop-blur-md">
+          <div className="max-w-[1024px] mx-auto px-6 h-16 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setShowLanding(true)}
+              className="flex items-center gap-2.5 text-left rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6]"
+            >
+              <span className="w-7 h-7 rounded-lg bg-[#18181b] border border-white/[0.1] flex items-center justify-center text-[#f4f4f5]">
+                <GitBranch className="w-4 h-4" strokeWidth={1.75} />
+              </span>
+              <span className="text-[15px] font-medium tracking-[-0.01em] text-[#f4f4f5]">
+                RepoForge
+              </span>
+            </button>
 
-      <div className="max-w-5xl mx-auto px-6 py-10 relative z-10">
-
-        {/* Header */}
-        <motion.header initial={{ opacity: 0, y: -16 }} animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
-          className="flex items-center justify-between mb-14"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-gradient-to-br from-primary to-violet-400 rounded-xl flex items-center justify-center shadow-lg shadow-primary/25">
-              <Github className="text-white w-5 h-5" />
-            </div>
-            <span className="font-bold text-lg tracking-tight">RepoForge</span>
-          </div>
-          <motion.div className="flex items-center gap-2.5 bg-card/60 backdrop-blur-md border border-border/50 py-2 px-4 rounded-full" whileHover={{ scale: 1.02 }}>
-            <div className="relative">
-              <img src={user.avatarUrl} alt={user.login} className="w-7 h-7 rounded-full border border-border" />
-              <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-background" />
-            </div>
-            <span className="text-sm font-medium">{user.login}</span>
-            <span className="text-xs text-muted-foreground bg-secondary/60 px-2 py-0.5 rounded-full">{user.publicRepos} repos</span>
-          </motion.div>
-        </motion.header>
-
-        {/* Step indicator */}
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-2 mb-10 max-w-2xl mx-auto">
-          {STEPS.map((s, i) => (
-            <React.Fragment key={s.id}>
-              <div className={`flex items-center gap-1.5 text-xs font-medium transition-colors ${
-                step === s.id ? "text-foreground" : i < stepIndex ? "text-primary" : "text-muted-foreground/40"
-              }`}>
-                <motion.div
-                  animate={{ scale: step === s.id ? 1 : 0.85, backgroundColor: step === s.id ? "hsl(var(--primary))" : i < stepIndex ? "hsl(var(--primary) / 0.4)" : "hsl(var(--secondary))" }}
-                  className="w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-bold"
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowLanding(true)}
+                className="h-8 px-3 rounded-lg border border-white/[0.08] bg-[#111114] text-[13px] font-medium text-[#a1a1aa] hover:text-[#f4f4f5] hover:border-white/[0.16] transition-[color,border-color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6]"
+              >
+                Overview
+              </button>
+              {user ? (
+                <div className="flex items-center gap-2 bg-[#111114] border border-white/[0.08] py-1 pl-1.5 pr-2.5 rounded-full">
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.login}
+                    className="w-6 h-6 rounded-full outline-1 -outline-offset-1 outline-white/10"
+                  />
+                  <span className="text-[13px] font-medium text-[#f4f4f5]">{user.login}</span>
+                  <span className="text-[12px] font-mono text-[#71717a] tabular-nums">
+                    {user.publicRepos}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => (hasCustomToken ? handleDisconnectToken() : setIsTokenModalOpen(true))}
+                    title={hasCustomToken ? "Disconnect token" : "Switch GitHub token"}
+                    className="ml-1 text-[11px] font-mono text-[#a1a1aa] hover:text-[#f4f4f5] border-l border-white/[0.08] pl-2 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6] rounded-sm"
+                  >
+                    {hasCustomToken ? "Disconnect" : "Switch"}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setIsTokenModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#8b5cf6] hover:bg-[#7c3aed] text-white text-[13px] font-medium enabled:active:scale-[0.96] transition-[background-color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6]"
                 >
-                  {i < stepIndex ? "✓" : i + 1}
-                </motion.div>
-                <span className="hidden sm:inline">{s.label}</span>
-              </div>
-              {i < STEPS.length - 1 && <ChevronRight className="w-3 h-3 text-muted-foreground/30 flex-shrink-0" />}
-            </React.Fragment>
-          ))}
-        </motion.div>
+                  <Github className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  Connect GitHub
+                </button>
+              )}
+            </div>
+          </div>
+        </header>
 
-        {/* Main content */}
-        <motion.main className="max-w-2xl mx-auto" layout>
-          <AnimatePresence mode="wait">
+        <div className="max-w-[1024px] mx-auto px-6 py-10">
+          {/* 5-Step Progress Stepper */}
+          <nav aria-label="Workflow steps" className="flex items-center justify-between gap-2 mb-10 max-w-2xl mx-auto bg-[#111114] border border-white/[0.08] px-4 py-2.5 rounded-xl">
+            {STEPS.map((s, i) => {
+              const isCurrent = step === s.id;
+              const isCompleted = i < stepIndex;
+              return (
+                <React.Fragment key={s.id}>
+                  <div
+                    className={`flex items-center gap-2 text-[13px] font-medium transition-colors duration-150 ${
+                      isCurrent
+                        ? "text-[#f4f4f5]"
+                        : isCompleted
+                        ? "text-[#a1a1aa]"
+                        : "text-[#71717a]"
+                    }`}
+                  >
+                    <span
+                      className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-mono tabular-nums transition-[background-color,color] duration-150 ${
+                        isCurrent
+                          ? "bg-[#8b5cf6] text-white"
+                          : isCompleted
+                          ? "bg-[#8b5cf6]/20 text-[#c4b5fd]"
+                          : "bg-white/[0.06] text-[#71717a]"
+                      }`}
+                    >
+                      {isCompleted ? <Check className="w-3 h-3" strokeWidth={2} /> : i + 1}
+                    </span>
+                    <span className="hidden sm:inline">{s.label}</span>
+                  </div>
+                  {i < STEPS.length - 1 && (
+                    <ChevronRight className="w-3.5 h-3.5 text-white/[0.15] shrink-0" strokeWidth={1.5} />
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </nav>
 
-            {/* ── STEP 1: Drop ── */}
-            {step === "drop" && (
-              <motion.div key="drop" variants={stagger} initial="hidden" animate="visible" exit={{ opacity: 0, y: -10 }}>
-                <motion.div variants={fadeUp} className="text-center mb-8">
-                  <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight mb-3 bg-clip-text text-transparent bg-gradient-to-r from-foreground via-foreground to-foreground/50">
-                    Ship repos faster.
-                  </h1>
-                  <p className="text-muted-foreground text-base">Upload a ZIP, TAR, or any archive. Pick folders. Each becomes a GitHub repo.</p>
-                </motion.div>
+          {/* Main Step Content */}
+          <main className="max-w-2xl mx-auto">
+            <AnimatePresence mode="wait" initial={false}>
+              {/* ── STEP 1: Upload (drop) ── */}
+              {step === "drop" && (
+                <motion.div
+                  key="drop"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -12 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  className="space-y-6"
+                >
+                  <div className="space-y-2">
+                    <h1 className="text-[28px] sm:text-[32px] font-medium tracking-[-0.02em] leading-[1.15] text-[#f4f4f5] [text-wrap:balance]">
+                      Upload project archives
+                    </h1>
+                    <p className="text-[15px] leading-[1.6] text-[#a1a1aa] [text-wrap:pretty]">
+                      Drop one or more ZIP or TAR archives to inspect folders, detect tech stacks, and create GitHub repositories.
+                    </p>
+                  </div>
 
-                <motion.div variants={fadeUp} className="flex flex-wrap gap-1.5 justify-center mb-8">
-                  {[".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz"].map(fmt => (
-                    <span key={fmt} className="text-[11px] font-mono bg-secondary/60 text-muted-foreground border border-border/40 px-2 py-0.5 rounded-md">{fmt}</span>
-                  ))}
-                </motion.div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz"].map((fmt) => (
+                      <span
+                        key={fmt}
+                        className="text-[11px] font-mono bg-[#111114] text-[#71717a] border border-white/[0.06] px-2 py-0.5 rounded-md"
+                      >
+                        {fmt}
+                      </span>
+                    ))}
+                  </div>
 
-                <motion.div variants={fadeUp} onMouseMove={handleMouseMove} style={{ x: parallaxX, y: parallaxY }}>
-                  <motion.div
+                  <div
                     data-testid="dropzone"
-                    animate={{
-                      scale: isDragging ? 1.025 : 1,
-                      borderColor: isDragging ? "hsl(var(--primary))" : selectedFile ? "hsl(var(--primary) / 0.5)" : "hsl(var(--border))",
-                      backgroundColor: isDragging ? "hsl(var(--primary) / 0.04)" : "hsl(var(--card))",
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        fileInputRef.current?.click();
+                      }
                     }}
-                    transition={spring}
-                    className="relative border-2 border-dashed rounded-3xl p-12 text-center cursor-pointer group overflow-hidden"
-                    onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+                    className={`relative border border-dashed rounded-2xl p-10 text-center cursor-pointer transition-[border-color,background-color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6] ${
+                      isDragging
+                        ? "border-[#8b5cf6] bg-[#8b5cf6]/[0.05]"
+                        : selectedFiles.length > 0
+                        ? "border-[#8b5cf6]/50 bg-[#111114]"
+                        : "border-white/[0.12] bg-[#111114] hover:border-white/[0.22]"
+                    }`}
+                    onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
                     onDragLeave={() => setIsDragging(false)}
                     onDrop={handleDrop}
                     onClick={() => fileInputRef.current?.click()}
                   >
-                    <input type="file" ref={fileInputRef} className="hidden" accept={ACCEPTED_FORMATS} data-testid="file-input"
-                      onChange={e => e.target.files?.[0] && handleFileSelect(e.target.files[0])} />
-                    <AnimatePresence mode="wait">
-                      {selectedFile ? (
-                        <motion.div key="file" initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} className="flex flex-col items-center gap-3">
-                          <div className="w-16 h-16 rounded-2xl bg-primary/10 text-primary flex items-center justify-center">
-                            <FileArchive className="w-8 h-8" />
-                          </div>
-                          <div>
-                            <p className="font-semibold text-lg">{selectedFile.name}</p>
-                            <p className="text-sm text-muted-foreground">{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</p>
-                          </div>
-                          <Button variant="ghost" size="sm" onClick={e => { e.stopPropagation(); setSelectedFile(null); }} data-testid="remove-file">
-                            <X className="w-3.5 h-3.5 mr-1.5" /> Remove
-                          </Button>
-                        </motion.div>
-                      ) : (
-                        <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center gap-4">
-                          <div className="w-16 h-16 rounded-2xl bg-secondary text-muted-foreground flex items-center justify-center group-hover:scale-110 group-hover:text-primary transition-all duration-300">
-                            <UploadCloud className="w-8 h-8" />
-                          </div>
-                          <div>
-                            <p className="font-medium text-lg mb-1">Click or drag archive here</p>
-                            <p className="text-sm text-muted-foreground">ZIP, TAR, TAR.GZ, TGZ, TAR.BZ2, TAR.XZ · Max 100MB</p>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </motion.div>
-                </motion.div>
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      className="hidden"
+                      accept={ACCEPTED_FORMATS}
+                      multiple
+                      data-testid="file-input"
+                      onChange={(e) => e.target.files && handleFileSelect(e.target.files)}
+                    />
 
-                <AnimatePresence>
-                  {previewMutation.isError && (
-                    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                      className="mt-4 flex items-start gap-2.5 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-3">
-                      <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                      <span>{(previewMutation.error as any)?.message ?? "Failed to extract archive"}</span>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <AnimatePresence>
-                  {selectedFile && (
-                    <motion.div variants={fadeUp} initial="hidden" animate="visible" exit={{ opacity: 0, height: 0 }} className="mt-6">
-                      <Button onClick={handlePreview} disabled={previewMutation.isPending}
-                        className="w-full h-13 text-base font-semibold rounded-xl shadow-lg shadow-primary/20" data-testid="preview-btn" size="lg">
-                        {previewMutation.isPending ? (
-                          <span className="flex items-center gap-2">
-                            <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.9, ease: "linear" }}><Loader2 className="w-4.5 h-4.5" /></motion.div>
-                            Scanning archive...
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-2">
-                            <PackageOpen className="w-4.5 h-4.5" />
-                            Scan & Select Folders
-                            <ArrowRight className="w-4 h-4" />
-                          </span>
-                        )}
-                      </Button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </motion.div>
-            )}
-
-            {/* ── STEP 2: Select ── */}
-            {step === "select" && (
-              <motion.div key="select" variants={stagger} initial="hidden" animate="visible" exit={{ opacity: 0, y: -10 }}>
-                <motion.div variants={fadeUp} className="mb-6">
-                  <div className="flex items-center gap-3 mb-1">
-                    <button onClick={handleReset} className="text-muted-foreground hover:text-foreground transition-colors">
-                      <RotateCcw className="w-4 h-4" />
-                    </button>
-                    <h2 className="text-2xl font-bold tracking-tight">Select Folders</h2>
-                  </div>
-                  <p className="text-muted-foreground text-sm ml-7">
-                    Found <span className="text-foreground font-medium">{folders.length}</span> folder{folders.length !== 1 ? "s" : ""} in <span className="text-foreground font-medium">{archiveName}</span>. Each selected folder becomes a separate repo.
-                  </p>
-                </motion.div>
-
-                <motion.div variants={stagger} className="space-y-2 mb-6">
-                  {folders.map((folder) => {
-                    const checked = selectedFolders.has(folder.name);
-                    const repoName = repoNameOverrides.get(folder.name) ?? folder.name;
-                    const isRenamed = repoName.trim() && repoName.trim() !== folder.name;
-                    return (
-                      <motion.div key={folder.name} variants={fadeUp} transition={spring} data-testid={`folder-${folder.name}`}
-                        className={`rounded-xl border transition-colors ${checked ? "bg-primary/5 border-primary/30" : "bg-card border-border opacity-60 hover:opacity-80"}`}>
-                        <div className="flex items-center justify-between px-4 pt-3.5 pb-2 cursor-pointer select-none" onClick={() => toggleFolder(folder.name)}>
-                          <div className="flex items-center gap-3 min-w-0">
-                            <Checkbox checked={checked} onCheckedChange={() => toggleFolder(folder.name)} className="pointer-events-none flex-shrink-0" data-testid={`checkbox-${folder.name}`} />
-                            <FolderOpen className={`w-4 h-4 flex-shrink-0 ${checked ? "text-primary" : "text-muted-foreground"}`} />
-                            <span className={`font-mono text-sm truncate ${checked ? "text-foreground font-medium" : "text-muted-foreground"}`}>{folder.name}</span>
-                          </div>
-                          <span className="text-xs bg-secondary/60 border border-border/30 px-2 py-0.5 rounded-md ml-2 flex-shrink-0">
-                            {folder.fileCount} file{folder.fileCount !== 1 ? "s" : ""}
-                          </span>
+                    {selectedFiles.length > 0 ? (
+                      <div className="flex flex-col items-center gap-3">
+                        <div className="w-12 h-12 rounded-xl bg-[#8b5cf6]/10 border border-[#8b5cf6]/25 text-[#c4b5fd] flex items-center justify-center">
+                          <FileArchive className="w-5 h-5" strokeWidth={1.5} />
                         </div>
-                        <AnimatePresence>
-                          {checked && (
-                            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.18 }} className="overflow-hidden">
-                              <div className="flex items-center gap-2 px-4 pb-3.5 pt-0.5">
-                                <ArrowRight className="w-3.5 h-3.5 text-muted-foreground/40 flex-shrink-0" />
-                                <div className="relative flex-1">
-                                  <Pencil className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground/50 pointer-events-none" />
-                                  <Input value={repoName} onChange={e => handleRename(folder.name, e.target.value)}
-                                    onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}
-                                    className="h-7 pl-7 text-xs font-mono bg-background/60 border-border/40 focus-visible:ring-1 focus-visible:ring-primary/40"
-                                    placeholder={folder.name} data-testid={`rename-input-${folder.name}`} />
-                                </div>
-                                {isRenamed && (
-                                  <button onClick={e => { e.stopPropagation(); handleRename(folder.name, folder.name); }}
-                                    className="text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors flex-shrink-0" title="Reset to folder name">
-                                    <RotateCcw className="w-3 h-3" />
-                                  </button>
-                                )}
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </motion.div>
-                    );
-                  })}
-                </motion.div>
-
-                <motion.div variants={fadeUp} className="bg-card border border-border rounded-2xl p-5 space-y-5 mb-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="flex items-center gap-2 font-medium text-sm">
-                        {isPrivate ? <Lock className="w-4 h-4 text-muted-foreground" /> : <Globe className="w-4 h-4 text-muted-foreground" />}
-                        Repository Visibility
+                        <div className="space-y-2">
+                          <p className="font-medium text-[15px] text-[#f4f4f5] tabular-nums">
+                            {selectedFiles.length} archive{selectedFiles.length !== 1 ? "s" : ""} selected
+                          </p>
+                          <div className="flex flex-wrap justify-center gap-2">
+                            {selectedFiles.map((f, idx) => (
+                              <span
+                                key={idx}
+                                className="text-[12px] bg-[#0d0d10] text-[#d4d4d8] px-2.5 py-1 rounded-md border border-white/[0.08] font-mono tabular-nums"
+                              >
+                                {f.name} ({formatBytes(f.size)})
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setSelectedFiles([]); }}
+                          data-testid="remove-file"
+                          className="mt-1 inline-flex items-center gap-1.5 text-[13px] text-[#a1a1aa] hover:text-red-400 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6] rounded-md px-2 py-1"
+                        >
+                          <X className="w-3.5 h-3.5" strokeWidth={1.5} />
+                          Remove files
+                        </button>
                       </div>
-                      <p className="text-xs text-muted-foreground mt-0.5">{isPrivate ? "Private — only you" : "Public — visible to everyone"}</p>
-                    </div>
-                    <SwitchUI checked={isPrivate} onCheckedChange={setIsPrivate} data-testid="toggle-private" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Description <span className="text-muted-foreground font-normal">(optional)</span></label>
-                    <Textarea placeholder="What are these repos for?" value={description} onChange={e => setDescription(e.target.value)}
-                      className="resize-none bg-background/50 text-sm" rows={2} data-testid="description-input" />
-                  </div>
-                </motion.div>
-
-                <AnimatePresence>
-                  {uploadMutation.isError && (
-                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                      className="mb-4 flex items-start gap-2.5 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-3">
-                      <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                      <span>{(uploadMutation.error as any)?.message ?? "Upload failed"}</span>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <motion.div variants={fadeUp} className="flex gap-3">
-                  <Button variant="outline" onClick={handleReset} className="flex-shrink-0 rounded-xl" data-testid="back-btn"><RotateCcw className="w-4 h-4" /></Button>
-                  <Button onClick={handleUpload} disabled={selectedFolders.size === 0 || uploadMutation.isPending}
-                    className="flex-1 h-12 text-base font-semibold rounded-xl shadow-lg shadow-primary/20" data-testid="upload-btn">
-                    {uploadMutation.isPending ? (
-                      <span className="flex items-center gap-2">
-                        <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.9, ease: "linear" }}><Loader2 className="w-4 h-4" /></motion.div>
-                        Starting job...
-                      </span>
                     ) : (
-                      <span className="flex items-center gap-2">
-                        Create {selectedFolders.size} Repo{selectedFolders.size !== 1 ? "s" : ""}
-                        <ArrowRight className="w-4 h-4" />
-                      </span>
-                    )}
-                  </Button>
-                </motion.div>
-              </motion.div>
-            )}
-
-            {/* ── STEP 3: Progress ── */}
-            {step === "progress" && (
-              <motion.div key="progress" variants={stagger} initial="hidden" animate="visible" exit={{ opacity: 0, y: -10 }}>
-
-                <motion.div variants={fadeUp} className="text-center mb-8">
-                  <div className="relative w-20 h-20 mx-auto mb-5">
-                    <svg className="w-20 h-20 -rotate-90" viewBox="0 0 80 80">
-                      <circle cx="40" cy="40" r="34" fill="none" stroke="hsl(var(--secondary))" strokeWidth="6" />
-                      <motion.circle cx="40" cy="40" r="34" fill="none" stroke="hsl(var(--primary))" strokeWidth="6"
-                        strokeLinecap="round"
-                        animate={{ strokeDashoffset: 213.6 - (213.6 * progressPct / 100) }}
-                        initial={{ strokeDashoffset: 213.6 }}
-                        transition={{ duration: 0.6, ease: "easeOut" }}
-                        style={{ strokeDasharray: 213.6 }}
-                      />
-                    </svg>
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="text-lg font-bold">{progressPct}%</span>
-                    </div>
-                  </div>
-                  <h2 className="text-2xl font-bold tracking-tight mb-1">Creating Repositories</h2>
-                  <p className="text-muted-foreground text-sm">
-                    {progressDone} of {progressTotal} done
-                    {progressDone < progressTotal && currentRepo && (
-                      <span> · <span className="font-mono text-foreground">{currentRepo}</span></span>
-                    )}
-                  </p>
-                </motion.div>
-
-                {/* Current action badge */}
-                <AnimatePresence>
-                  {currentAction && (
-                    <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                      className="flex items-center justify-center gap-2 mb-6">
-                      <div className="flex items-center gap-2 bg-primary/10 border border-primary/20 text-primary text-xs px-3 py-1.5 rounded-full font-medium">
-                        <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1.2, ease: "linear" }}>
-                          <Loader2 className="w-3 h-3" />
-                        </motion.div>
-                        {currentAction}
+                      <div className="flex flex-col items-center gap-3 py-4">
+                        <div className="w-12 h-12 rounded-xl bg-white/[0.04] border border-white/[0.08] text-[#a1a1aa] flex items-center justify-center">
+                          <UploadCloud className="w-5 h-5" strokeWidth={1.5} />
+                        </div>
+                        <div>
+                          <p className="font-medium text-[15px] text-[#f4f4f5]">
+                            Click or drag archive files here
+                          </p>
+                          <p className="text-[13px] text-[#71717a] mt-1">
+                            Supports multiple ZIP or TAR.GZ files up to 100 MB
+                          </p>
+                        </div>
                       </div>
-                    </motion.div>
+                    )}
+                  </div>
+
+                  {previewMutation.isError && (
+                    <div className="flex items-start gap-2.5 text-[13px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+                      <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" strokeWidth={1.5} />
+                      <span>{(previewMutation.error as any)?.message ?? "Failed to extract archive"}</span>
+                    </div>
                   )}
-                </AnimatePresence>
 
-                {/* Progress bar */}
-                <motion.div variants={fadeUp} className="mb-6">
-                  <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-                    <motion.div className="h-full bg-primary rounded-full" animate={{ width: `${progressPct}%` }} transition={{ duration: 0.6, ease: "easeOut" }} />
-                  </div>
+                  {selectedFiles.length > 0 && (
+                    <Button
+                      onClick={handlePreview}
+                      disabled={previewMutation.isPending}
+                      className="w-full h-11 text-[14px] font-medium rounded-lg bg-[#8b5cf6] hover:bg-[#7c3aed] text-white enabled:active:scale-[0.96] transition-[background-color,transform] duration-150 ease-out"
+                      data-testid="preview-btn"
+                    >
+                      {previewMutation.isPending ? (
+                        <span className="flex items-center gap-2">
+                          <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.5} />
+                          Scanning archives…
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-2">
+                          <PackageOpen className="w-4 h-4" strokeWidth={1.5} />
+                          Scan archives and preview structure
+                          <ArrowRight className="w-4 h-4" strokeWidth={1.5} />
+                        </span>
+                      )}
+                    </Button>
+                  )}
                 </motion.div>
+              )}
 
-                {/* Safe-to-close banner */}
-                <motion.div variants={fadeUp} className="flex items-start gap-3 bg-card border border-border/50 rounded-xl p-4 mb-6">
-                  <WifiOff className="w-4 h-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-                  <div>
-                    <p className="text-sm font-medium">Safe to close this tab</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">The server is handling uploads in the background. Reopen this page anytime to check progress.</p>
+              {/* ── STEP 2: Preview (Folder Tree & File Explorer) ── */}
+              {step === "preview" && (
+                <motion.div
+                  key="preview"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -12 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  className="space-y-6"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h2 className="text-[24px] font-medium tracking-[-0.02em] text-[#f4f4f5]">
+                        Archive preview
+                      </h2>
+                      <p className="text-[#a1a1aa] text-[14px] mt-1 tabular-nums">
+                        Found <span className="text-[#f4f4f5] font-medium">{folders.length}</span> project folder{folders.length !== 1 ? "s" : ""} in{" "}
+                        <span className="font-mono text-[#f4f4f5]">{archiveName}</span>
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="rounded-lg border-white/[0.1] bg-[#111114] text-[#f4f4f5] hover:bg-white/[0.06] enabled:active:scale-[0.96] transition-[background-color,transform] duration-150"
+                      onClick={() => {
+                        if (selectedFolders.size === folders.length) setSelectedFolders(new Set());
+                        else setSelectedFolders(new Set(folders.map((f) => f.name)));
+                      }}
+                    >
+                      {selectedFolders.size === folders.length ? "Deselect all" : "Select all"}
+                    </Button>
                   </div>
-                </motion.div>
 
-                {/* Completed so far */}
-                <AnimatePresence>
-                  {completedResults.length > 0 && (
-                    <motion.div variants={stagger} initial="hidden" animate="visible" className="space-y-2 mb-6">
-                      <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide mb-2">Completed so far</p>
-                      {completedResults.map((r) => (
-                        <motion.div key={r.folderName} variants={fadeUp}
-                          className={`flex items-center justify-between p-3.5 rounded-xl border ${r.success ? "bg-card border-emerald-500/20" : "bg-destructive/5 border-destructive/20"}`}>
-                          <div className="flex items-center gap-3 min-w-0">
-                            {r.success ? <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 text-destructive flex-shrink-0" />}
-                            <div className="min-w-0">
-                              <p className="font-mono font-medium text-sm truncate">{r.repoName}</p>
-                              {r.success
-                                ? <p className="text-xs text-muted-foreground">{r.filesUploaded} file{r.filesUploaded !== 1 ? "s" : ""} uploaded</p>
-                                : <p className="text-xs text-destructive">{r.error}</p>}
+                  <div className="space-y-3">
+                    {folders.map((folder) => {
+                      const checked = selectedFolders.has(folder.name);
+                      const isExpanded = expandedFolders.has(folder.name);
+                      const tech = folder.detectedTech;
+
+                      return (
+                        <div
+                          key={folder.name}
+                          className={`rounded-xl border transition-[border-color,opacity,background-color] duration-150 ${
+                            checked
+                              ? "bg-[#111114] border-white/[0.14]"
+                              : "bg-[#111114]/50 border-white/[0.06] opacity-60"
+                          }`}
+                        >
+                          <div
+                            className="flex items-center justify-between p-4 cursor-pointer select-none"
+                            onClick={() => toggleFolderSelection(folder.name)}
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <Checkbox
+                                checked={checked}
+                                onCheckedChange={() => toggleFolderSelection(folder.name)}
+                                className="pointer-events-none shrink-0"
+                              />
+                              <FolderOpen
+                                className={`w-4 h-4 shrink-0 ${checked ? "text-[#8b5cf6]" : "text-[#71717a]"}`}
+                                strokeWidth={1.5}
+                              />
+                              <div className="min-w-0">
+                                <span className="font-mono text-[14px] font-medium text-[#f4f4f5] truncate block">
+                                  {folder.name}
+                                </span>
+                                <div className="flex items-center gap-2 text-[12px] font-mono text-[#71717a] mt-0.5 tabular-nums">
+                                  <span>{folder.fileCount} files</span>
+                                  <span>/</span>
+                                  <span>{formatBytes(folder.totalSizeBytes)}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {tech && (
+                                <span className="font-mono text-[11px] px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.08] text-[#a1a1aa]">
+                                  {tech.framework} ({tech.language})
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); toggleFolderTreeExpand(folder.name); }}
+                                className="p-1.5 hover:bg-white/[0.06] rounded-md text-[#a1a1aa] hover:text-[#f4f4f5] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6]"
+                                title="Toggle file tree view"
+                              >
+                                <ChevronDown
+                                  className={`w-4 h-4 transition-transform duration-150 ${isExpanded ? "rotate-180" : ""}`}
+                                  strokeWidth={1.5}
+                                />
+                              </button>
                             </div>
                           </div>
-                          {r.success && (
-                            <a href={r.repoUrl} target="_blank" rel="noopener noreferrer"
-                              className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors flex-shrink-0 ml-3">
-                              View <ExternalLink className="w-3 h-3" />
-                            </a>
+
+                          {isExpanded && (
+                            <div className="border-t border-white/[0.06] px-4 py-3 bg-[#0d0d10] rounded-b-xl">
+                              <p className="text-[12px] text-[#71717a] mb-2">
+                                File structure — click a file to preview
+                              </p>
+                              <div className="max-h-60 overflow-y-auto overscroll-contain space-y-0.5 pr-1 font-mono text-[12px]">
+                                {folder.files.map((file) => (
+                                  <button
+                                    key={file.path}
+                                    type="button"
+                                    onClick={() => handleOpenFilePreview(folder.name, file.path)}
+                                    className="w-full flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-white/[0.05] text-left transition-colors duration-150 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6]"
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <Code2 className="w-3.5 h-3.5 text-[#71717a] group-hover:text-[#c4b5fd] shrink-0" strokeWidth={1.5} />
+                                      <span className="truncate text-[#d4d4d8]">{file.path}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0 ml-2">
+                                      <span className="text-[11px] text-[#71717a] tabular-nums">{formatBytes(file.size)}</span>
+                                      <Eye className="w-3.5 h-3.5 text-[#71717a] opacity-0 group-hover:opacity-100 transition-opacity duration-150" strokeWidth={1.5} />
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
                           )}
-                        </motion.div>
-                      ))}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <motion.div variants={fadeUp}>
-                  <Button variant="outline" onClick={handleReset} className="w-full rounded-xl text-sm" size="sm">
-                    <X className="w-3.5 h-3.5 mr-1.5" /> Cancel &amp; start over
-                  </Button>
-                </motion.div>
-              </motion.div>
-            )}
-
-            {/* ── STEP 4: Result ── */}
-            {step === "result" && (
-              <motion.div key="result" variants={stagger} initial="hidden" animate="visible" exit={{ opacity: 0 }}>
-                <motion.div variants={fadeUp} className="text-center mb-8">
-                  <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}
-                    transition={{ type: "spring", delay: 0.15, stiffness: 260, damping: 18 }}
-                    className="w-20 h-20 bg-emerald-500/10 text-emerald-500 rounded-full flex items-center justify-center mx-auto mb-5">
-                    <CheckCircle2 className="w-10 h-10" />
-                  </motion.div>
-                  <h2 className="text-3xl font-extrabold tracking-tight mb-2">
-                    {results.filter(r => r.success).length === results.length ? "All repos created!" : `${results.filter(r => r.success).length} of ${results.length} created`}
-                  </h2>
-                  <p className="text-muted-foreground">Your repositories are live on GitHub.</p>
-                </motion.div>
-
-                <motion.div variants={stagger} className="space-y-3 mb-8">
-                  {results.map((r) => (
-                    <motion.div key={r.folderName} variants={fadeUp}
-                      className={`flex items-center justify-between p-4 rounded-xl border ${r.success ? "bg-card border-emerald-500/20" : "bg-destructive/5 border-destructive/20"}`}>
-                      <div className="flex items-center gap-3 min-w-0">
-                        {r.success ? <CheckCircle2 className="w-4.5 h-4.5 text-emerald-500 flex-shrink-0" /> : <AlertCircle className="w-4.5 h-4.5 text-destructive flex-shrink-0" />}
-                        <div className="min-w-0">
-                          <p className="font-mono font-medium text-sm truncate">{r.repoName}</p>
-                          {r.success ? <p className="text-xs text-muted-foreground">{r.filesUploaded} file{r.filesUploaded !== 1 ? "s" : ""} uploaded</p>
-                            : <p className="text-xs text-destructive">{r.error}</p>}
                         </div>
-                      </div>
-                      {r.success && (
-                        <a href={r.repoUrl} target="_blank" rel="noopener noreferrer"
-                          className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors flex-shrink-0 ml-3" data-testid={`view-repo-${r.repoName}`}>
-                          View <ExternalLink className="w-3 h-3" />
-                        </a>
-                      )}
-                    </motion.div>
-                  ))}
-                </motion.div>
+                      );
+                    })}
+                  </div>
 
-                <motion.div variants={fadeUp}>
-                  <Button onClick={handleReset} variant="outline" className="w-full h-12 rounded-xl" data-testid="upload-another-btn">
-                    <RotateCcw className="w-4 h-4 mr-2" /> Upload Another Archive
+                  <div className="flex gap-3 pt-2">
+                    <Button
+                      variant="outline"
+                      onClick={handleReset}
+                      className="rounded-lg border-white/[0.1] bg-[#111114] text-[#f4f4f5] hover:bg-white/[0.06] enabled:active:scale-[0.96] transition-[background-color,transform] duration-150"
+                    >
+                      <RotateCcw className="w-4 h-4 mr-2" strokeWidth={1.5} />
+                      Start over
+                    </Button>
+                    <Button
+                      onClick={() => setStep("detect")}
+                      disabled={selectedFolders.size === 0}
+                      className="flex-1 h-10 text-[14px] font-medium rounded-lg bg-[#8b5cf6] hover:bg-[#7c3aed] text-white enabled:active:scale-[0.96] transition-[background-color,transform] duration-150 tabular-nums"
+                    >
+                      Next: Tech detection ({selectedFolders.size} selected)
+                      <ArrowRight className="w-4 h-4 ml-2" strokeWidth={1.5} />
+                    </Button>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* ── STEP 3: Smart Tech Detection ── */}
+              {step === "detect" && (
+                <motion.div
+                  key="detect"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -12 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  className="space-y-6"
+                >
+                  <div>
+                    <h2 className="text-[24px] font-medium tracking-[-0.02em] text-[#f4f4f5]">
+                      Detected stack and topics
+                    </h2>
+                    <p className="text-[#a1a1aa] text-[14px] mt-1 [text-wrap:pretty]">
+                      Review framework, language, repository topics, and .gitignore template for each selected project.
+                    </p>
+                  </div>
+
+                  <div className="space-y-4">
+                    {[...selectedFolders].map((folderName) => {
+                      const folderObj = folders.find((f) => f.name === folderName);
+                      const tech = folderObj?.detectedTech ?? {
+                        framework: "General",
+                        language: "JavaScript",
+                        topics: [],
+                        badges: [],
+                        recommendedGitignore: "node",
+                      };
+                      const cfg = repoConfigs.get(folderName) ?? { repoName: folderName, topics: tech.topics };
+                      const currentTopics = cfg.topics ?? tech.topics;
+
+                      return (
+                        <div
+                          key={folderName}
+                          className="bg-[#111114] border border-white/[0.08] rounded-xl p-5 space-y-4"
+                        >
+                          <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <FolderOpen className="w-4 h-4 text-[#8b5cf6] shrink-0" strokeWidth={1.5} />
+                              <span className="font-mono font-medium text-[14px] text-[#f4f4f5] truncate">{folderName}</span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="font-mono text-[11px] px-2 py-0.5 rounded-md bg-[#8b5cf6]/10 border border-[#8b5cf6]/25 text-[#c4b5fd]">
+                                {tech.framework}
+                              </span>
+                              <span className="font-mono text-[11px] px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.08] text-[#a1a1aa]">
+                                {tech.language}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="text-[12px] text-[#a1a1aa] mb-2 flex items-center gap-1.5">
+                              <Tag className="w-3.5 h-3.5 text-[#71717a]" strokeWidth={1.5} />
+                              GitHub topics
+                            </label>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {currentTopics.map((t) => (
+                                <span
+                                  key={t}
+                                  className="inline-flex items-center gap-1 text-[12px] bg-[#0d0d10] border border-white/[0.08] text-[#d4d4d8] px-2.5 py-1 rounded-md font-mono"
+                                >
+                                  #{t}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveTopic(folderName, t)}
+                                    aria-label={`Remove topic ${t}`}
+                                    className="text-[#71717a] hover:text-red-400 transition-colors duration-150 ml-0.5"
+                                  >
+                                    <X className="w-3 h-3" strokeWidth={1.5} />
+                                  </button>
+                                </span>
+                              ))}
+                              <Input
+                                placeholder="+ Add topic"
+                                className="h-7 w-28 text-base sm:text-[12px] bg-[#0d0d10] border-white/[0.08] font-mono"
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    handleAddTopic(folderName, e.currentTarget.value);
+                                    e.currentTarget.value = "";
+                                  }
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between text-[12px] bg-[#0d0d10] border border-white/[0.06] px-3 py-2 rounded-lg">
+                            <span className="text-[#a1a1aa]">Recommended .gitignore template</span>
+                            <span className="font-mono text-[#f4f4f5] bg-[#111114] px-2 py-0.5 rounded border border-white/[0.08]">
+                              {tech.recommendedGitignore}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex gap-3 pt-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => setStep("preview")}
+                      className="rounded-lg border-white/[0.1] bg-[#111114] text-[#f4f4f5] hover:bg-white/[0.06] enabled:active:scale-[0.96] transition-[background-color,transform] duration-150"
+                    >
+                      <ArrowRight className="w-4 h-4 mr-2 rotate-180" strokeWidth={1.5} />
+                      Back to preview
+                    </Button>
+                    <Button
+                      onClick={() => setStep("configure")}
+                      className="flex-1 h-10 text-[14px] font-medium rounded-lg bg-[#8b5cf6] hover:bg-[#7c3aed] text-white enabled:active:scale-[0.96] transition-[background-color,transform] duration-150"
+                    >
+                      Next: Repository settings
+                      <ArrowRight className="w-4 h-4 ml-2" strokeWidth={1.5} />
+                    </Button>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* ── STEP 4: Configure ── */}
+              {step === "configure" && (
+                <motion.div
+                  key="configure"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -12 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  className="space-y-6"
+                >
+                  <div>
+                    <h2 className="text-[24px] font-medium tracking-[-0.02em] text-[#f4f4f5]">
+                      Repository and documentation settings
+                    </h2>
+                    <p className="text-[#a1a1aa] text-[14px] mt-1 [text-wrap:pretty]">
+                      Configure global visibility and license defaults, or override names and documentation per repository.
+                    </p>
+                  </div>
+
+                  {/* Global Defaults Card */}
+                  <div className="bg-[#111114] border border-white/[0.08] rounded-xl p-5 space-y-4">
+                    <h3 className="text-[14px] font-medium text-[#f4f4f5]">
+                      Global defaults
+                    </h3>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="flex items-center justify-between bg-[#0d0d10] p-3 rounded-lg border border-white/[0.06]">
+                        <div>
+                          <span className="text-[13px] font-medium text-[#f4f4f5] block">
+                            {globalPrivate ? "Private repositories" : "Public repositories"}
+                          </span>
+                          <span className="text-[12px] text-[#71717a]">
+                            {globalPrivate ? "Only you can view" : "Visible to everyone"}
+                          </span>
+                        </div>
+                        <SwitchUI checked={globalPrivate} onCheckedChange={handleApplyGlobalPrivate} data-testid="toggle-private" />
+                      </div>
+
+                      <div className="flex items-center justify-between bg-[#0d0d10] p-3 rounded-lg border border-white/[0.06]">
+                        <div>
+                          <span className="text-[13px] font-medium text-[#f4f4f5] block">Default license</span>
+                          <span className="text-[12px] text-[#71717a]">Auto-generate LICENSE</span>
+                        </div>
+                        <select
+                          value={globalLicense}
+                          onChange={(e) => handleApplyGlobalLicense(e.target.value as LicenseType)}
+                          className="bg-[#111114] border border-white/[0.1] text-[#f4f4f5] text-[12px] rounded-md px-2.5 py-1.5 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6]"
+                        >
+                          <option value="MIT">MIT</option>
+                          <option value="Apache-2.0">Apache 2.0</option>
+                          <option value="GPL-3.0">GPL 3.0</option>
+                          <option value="BSD-3-Clause">BSD 3-Clause</option>
+                          <option value="None">None</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[12px] text-[#a1a1aa] block">
+                        Global repository description (optional)
+                      </label>
+                      <Textarea
+                        placeholder="Enter description for all repositories…"
+                        value={globalDescription}
+                        onChange={(e) => setGlobalDescription(e.target.value)}
+                        className="resize-none bg-[#0d0d10] border-white/[0.08] text-base sm:text-[13px]"
+                        rows={2}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Individual Repository Overrides */}
+                  <div className="space-y-3">
+                    <h3 className="text-[14px] font-medium text-[#a1a1aa]">
+                      Per-repository overrides
+                    </h3>
+                    {[...selectedFolders].map((folderName) => {
+                      const cfg = repoConfigs.get(folderName) ?? {
+                        repoName: folderName,
+                        private: globalPrivate,
+                        license: globalLicense,
+                        generateReadme: true,
+                        generateGitignore: true,
+                      };
+                      const currentName = cfg.repoName ?? folderName;
+
+                      return (
+                        <div
+                          key={folderName}
+                          className="bg-[#111114] border border-white/[0.08] rounded-xl p-5 space-y-4"
+                        >
+                          <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+                            <span className="font-mono text-[12px] text-[#71717a]">
+                              Source: <span className="text-[#f4f4f5] font-medium">{folderName}</span>
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[12px] font-mono text-[#a1a1aa]">
+                                {cfg.private ? "Private" : "Public"}
+                              </span>
+                              <SwitchUI
+                                checked={cfg.private ?? globalPrivate}
+                                onCheckedChange={(val) => handleUpdateConfig(folderName, { private: val })}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="space-y-1.5">
+                              <label className="text-[12px] text-[#a1a1aa] flex items-center gap-1.5">
+                                <Pencil className="w-3 h-3 text-[#71717a]" strokeWidth={1.5} />
+                                Repository name
+                              </label>
+                              <Input
+                                value={currentName}
+                                onChange={(e) => handleUpdateConfig(folderName, { repoName: e.target.value })}
+                                className="font-mono text-base sm:text-[13px] bg-[#0d0d10] border-white/[0.08]"
+                                placeholder={folderName}
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <label className="text-[12px] text-[#a1a1aa] flex items-center gap-1.5">
+                                <Shield className="w-3 h-3 text-[#71717a]" strokeWidth={1.5} />
+                                License
+                              </label>
+                              <select
+                                value={cfg.license ?? "MIT"}
+                                onChange={(e) => handleUpdateConfig(folderName, { license: e.target.value as LicenseType })}
+                                className="w-full h-9 bg-[#0d0d10] border border-white/[0.08] text-[#f4f4f5] text-[13px] rounded-md px-3 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6]"
+                              >
+                                <option value="MIT">MIT License</option>
+                                <option value="Apache-2.0">Apache 2.0</option>
+                                <option value="GPL-3.0">GPL 3.0</option>
+                                <option value="BSD-3-Clause">BSD 3-Clause</option>
+                                <option value="None">None (No License)</option>
+                              </select>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap gap-5 pt-2 border-t border-white/[0.06] text-[13px]">
+                            <label className="flex items-center gap-2 cursor-pointer text-[#d4d4d8]">
+                              <Checkbox
+                                checked={cfg.generateReadme ?? true}
+                                onCheckedChange={(val) => handleUpdateConfig(folderName, { generateReadme: !!val })}
+                              />
+                              <FileText className="w-3.5 h-3.5 text-[#71717a]" strokeWidth={1.5} />
+                              <span>Auto-generate README.md</span>
+                            </label>
+
+                            <label className="flex items-center gap-2 cursor-pointer text-[#d4d4d8]">
+                              <Checkbox
+                                checked={cfg.generateGitignore ?? true}
+                                onCheckedChange={(val) => handleUpdateConfig(folderName, { generateGitignore: !!val })}
+                              />
+                              <Code2 className="w-3.5 h-3.5 text-[#71717a]" strokeWidth={1.5} />
+                              <span>Auto-generate .gitignore</span>
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {uploadMutation.isError && (
+                    <div className="flex items-start gap-2.5 text-[13px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+                      <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" strokeWidth={1.5} />
+                      <span>{(uploadMutation.error as any)?.message ?? "Forge failed to start"}</span>
+                    </div>
+                  )}
+
+                  {!user && (
+                    <div className="flex items-center justify-between gap-4 bg-[#111114] border border-[#8b5cf6]/30 rounded-xl p-4">
+                      <div>
+                        <p className="text-[13px] font-medium text-[#f4f4f5]">
+                          Connect a GitHub account to forge repositories
+                        </p>
+                        <p className="text-[12px] text-[#a1a1aa] mt-0.5">
+                          Your token stays in your browser session and is never stored on the server.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => setIsTokenModalOpen(true)}
+                        className="shrink-0 rounded-lg bg-[#8b5cf6] hover:bg-[#7c3aed] text-white"
+                      >
+                        Connect GitHub
+                      </Button>
+                    </div>
+                  )}
+
+                  <div className="flex gap-3 pt-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => setStep("detect")}
+                      className="rounded-lg border-white/[0.1] bg-[#111114] text-[#f4f4f5] hover:bg-white/[0.06] enabled:active:scale-[0.96] transition-[background-color,transform] duration-150"
+                    >
+                      <ArrowRight className="w-4 h-4 mr-2 rotate-180" strokeWidth={1.5} />
+                      Back to detect
+                    </Button>
+                    <Button
+                      onClick={() => (user ? handleUpload() : setIsTokenModalOpen(true))}
+                      disabled={uploadMutation.isPending}
+                      className="flex-1 h-10 text-[14px] font-medium rounded-lg bg-[#8b5cf6] hover:bg-[#7c3aed] text-white enabled:active:scale-[0.96] transition-[background-color,transform] duration-150 tabular-nums"
+                      data-testid="upload-btn"
+                    >
+                      {uploadMutation.isPending ? (
+                        <span className="flex items-center gap-2">
+                          <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.5} />
+                          Starting job…
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-2">
+                          <Github className="w-4 h-4" strokeWidth={1.5} />
+                          Forge {selectedFolders.size} {selectedFolders.size === 1 ? "repository" : "repositories"}
+                          <ArrowRight className="w-4 h-4" strokeWidth={1.5} />
+                        </span>
+                      )}
+                    </Button>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* ── STEP 5: Forge (Live Progress Timeline & Completion Actions) ── */}
+              {step === "forge" && (
+                <motion.div
+                  key="forge"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -12 }}
+                  transition={{ duration: 0.2, ease: EASE_OUT }}
+                  className="space-y-6"
+                >
+                  {/* Status Header */}
+                  <div className="bg-[#111114] border border-white/[0.08] rounded-xl p-6 flex items-center justify-between gap-6">
+                    <div className="space-y-1">
+                      <h2 className="text-[22px] font-medium tracking-[-0.02em] text-[#f4f4f5]">
+                        {progressPct === 100 ? "Forge complete" : "Forging repositories…"}
+                      </h2>
+                      <p className="text-[#a1a1aa] text-[13px] tabular-nums">
+                        {progressDone} of {progressTotal} repositories processed
+                        {currentRepoName && progressPct < 100 && (
+                          <span>
+                            {" — "}
+                            <span className="font-mono text-[#f4f4f5]">{currentRepoName}</span>
+                          </span>
+                        )}
+                      </p>
+                      {currentActionText && progressPct < 100 && (
+                        <div className="inline-flex items-center gap-2 text-[12px] text-[#c4b5fd] pt-1 font-mono">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={1.5} />
+                          {currentActionText}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="relative w-16 h-16 shrink-0">
+                      <svg className="w-16 h-16 -rotate-90" viewBox="0 0 80 80">
+                        <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="6" />
+                        <motion.circle
+                          cx="40"
+                          cy="40"
+                          r="34"
+                          fill="none"
+                          stroke="#8b5cf6"
+                          strokeWidth="6"
+                          strokeLinecap="round"
+                          animate={{ strokeDashoffset: 213.6 - (213.6 * progressPct) / 100 }}
+                          initial={{ strokeDashoffset: 213.6 }}
+                          transition={{ duration: 0.4, ease: EASE_OUT }}
+                          style={{ strokeDasharray: 213.6 }}
+                        />
+                      </svg>
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <span className="text-[13px] font-mono font-medium text-[#f4f4f5] tabular-nums">
+                          {progressPct}%
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {progressPct < 100 && (
+                    <div className="flex items-start gap-3 bg-[#111114] border border-white/[0.08] rounded-xl p-4">
+                      <WifiOff className="w-4 h-4 text-[#71717a] mt-0.5 shrink-0" strokeWidth={1.5} />
+                      <div>
+                        <p className="text-[13px] font-medium text-[#f4f4f5]">Safe to close this tab</p>
+                        <p className="text-[12px] text-[#a1a1aa] mt-0.5">
+                          The server continues creating repositories and uploading files to GitHub in the background.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Live Progress Timeline List */}
+                  <div className="space-y-2.5">
+                    <h3 className="text-[13px] font-medium text-[#a1a1aa]">
+                      Repository timeline
+                    </h3>
+                    {displayResults.map((r, idx) => {
+                      const isDone = r.success && r.status === "done";
+                      const isUploading =
+                        r.status === "uploading" || (currentRepoName === r.folderName && progressPct < 100);
+
+                      return (
+                        <div
+                          key={r.folderName || idx}
+                          className={`flex items-center justify-between p-4 rounded-xl border transition-[border-color,background-color] duration-150 ${
+                            isDone
+                              ? "bg-[#111114] border-emerald-500/30"
+                              : isUploading
+                              ? "bg-[#111114] border-[#8b5cf6]/40"
+                              : r.error
+                              ? "bg-[#111114] border-red-500/30"
+                              : "bg-[#111114]/60 border-white/[0.06]"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            {isDone ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" strokeWidth={1.75} />
+                            ) : isUploading ? (
+                              <Loader2 className="w-4 h-4 text-[#8b5cf6] animate-spin shrink-0" strokeWidth={1.75} />
+                            ) : r.error ? (
+                              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" strokeWidth={1.75} />
+                            ) : (
+                              <div className="w-4 h-4 rounded-full border border-white/20 shrink-0" />
+                            )}
+
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono font-medium text-[14px] text-[#f4f4f5] truncate">
+                                  {r.repoName || r.folderName}
+                                </span>
+                                {r.detectedTech && (
+                                  <span className="text-[11px] font-mono bg-white/[0.04] border border-white/[0.06] px-2 py-0.5 rounded text-[#a1a1aa]">
+                                    {r.detectedTech.framework}
+                                  </span>
+                                )}
+                              </div>
+
+                              {isDone ? (
+                                <span className="text-[12px] text-emerald-400 block mt-0.5 tabular-nums">
+                                  Created ({r.filesUploaded} files uploaded)
+                                </span>
+                              ) : isUploading ? (
+                                <span className="text-[12px] text-[#c4b5fd] block mt-0.5">
+                                  Uploading files and documentation…
+                                </span>
+                              ) : r.error ? (
+                                <span className="text-[12px] text-red-400 block mt-0.5">{r.error}</span>
+                              ) : (
+                                <span className="text-[12px] text-[#71717a] block mt-0.5">Queued</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {isDone && (
+                            <div className="flex items-center gap-2 shrink-0 ml-2">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleCopyUrl(r.repoUrl, idx)}
+                                className="h-8 px-2.5 text-[#a1a1aa] hover:text-[#f4f4f5]"
+                              >
+                                {copiedIndex === idx ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-400" strokeWidth={1.75} />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" strokeWidth={1.5} />
+                                )}
+                              </Button>
+                              <a
+                                href={r.repoUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 text-[12px] text-[#f4f4f5] font-medium bg-white/[0.06] hover:bg-white/[0.1] px-3 py-1.5 rounded-md border border-white/[0.08] transition-colors duration-150"
+                              >
+                                View
+                                <ExternalLink className="w-3 h-3" strokeWidth={1.5} />
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Completion Batch Actions */}
+                  {progressPct === 100 && (
+                    <div className="bg-[#111114] border border-white/[0.08] p-5 rounded-xl space-y-3">
+                      <h3 className="text-[14px] font-medium text-[#f4f4f5]">
+                        Batch actions
+                      </h3>
+                      <div className="flex flex-wrap gap-3">
+                        <Button
+                          onClick={handleCopyAllUrls}
+                          variant="outline"
+                          className="flex-1 rounded-lg border-white/[0.1] bg-[#0d0d10] text-[#f4f4f5] hover:bg-white/[0.06] enabled:active:scale-[0.96] transition-[background-color,transform] duration-150"
+                        >
+                          {copiedAll ? (
+                            <Check className="w-4 h-4 mr-2 text-emerald-400" strokeWidth={1.75} />
+                          ) : (
+                            <Copy className="w-4 h-4 mr-2" strokeWidth={1.5} />
+                          )}
+                          {copiedAll ? "Copied all URLs" : "Copy all repo URLs"}
+                        </Button>
+                        <Button
+                          onClick={handleOpenAllInGithub}
+                          className="flex-1 rounded-lg bg-[#f4f4f5] text-[#09090b] hover:bg-white enabled:active:scale-[0.96] transition-[background-color,transform] duration-150"
+                        >
+                          <ExternalLink className="w-4 h-4 mr-2" strokeWidth={1.5} />
+                          Open all in GitHub
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  <Button
+                    variant="outline"
+                    onClick={handleReset}
+                    className="w-full h-10 rounded-lg border-white/[0.1] bg-[#111114] text-[#f4f4f5] hover:bg-white/[0.06] enabled:active:scale-[0.96] transition-[background-color,transform] duration-150 text-[14px]"
+                    data-testid="upload-another-btn"
+                  >
+                    <RotateCcw className="w-4 h-4 mr-2" strokeWidth={1.5} />
+                    Forge more repositories
                   </Button>
                 </motion.div>
-              </motion.div>
-            )}
+              )}
+            </AnimatePresence>
+          </main>
 
-          </AnimatePresence>
-        </motion.main>
-
-        {/* Recent Repos */}
-        <motion.section className="mt-20 pt-10 border-t border-border/40 max-w-5xl"
-          initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true, margin: "-80px" }} transition={{ duration: 0.5 }}>
-          <div className="flex items-center justify-between mb-7">
-            <h2 className="text-xl font-bold tracking-tight">Recent Repos</h2>
-            <span className="text-xs text-muted-foreground bg-secondary/50 px-3 py-1 rounded-full border border-border/40">{user.publicRepos} public</span>
-          </div>
-          {isReposLoading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {[...Array(6)].map((_, i) => <div key={i} className="h-28 bg-card/40 rounded-xl border border-border animate-pulse" />)}
-            </div>
-          ) : repos && repos.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              <AnimatePresence>
-                {repos.slice(0, 9).map((repo, i) => (
-                  <motion.a key={repo.name} href={repo.url} target="_blank" rel="noopener noreferrer"
-                    initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
-                    whileHover={{ y: -3, boxShadow: "0 8px 30px -8px rgba(0,0,0,0.4)" }}
-                    className="group block bg-card border border-border p-4 rounded-xl hover:border-primary/30 transition-colors" data-testid={`repo-card-${repo.name}`}>
-                    <div className="flex justify-between items-start mb-2.5">
-                      <span className="font-semibold text-sm truncate mr-2">{repo.name}</span>
-                      {repo.private
-                        ? <span className="flex-shrink-0 bg-secondary text-muted-foreground text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 border border-border/40"><Lock className="w-2.5 h-2.5" />Private</span>
-                        : <span className="flex-shrink-0 bg-primary/10 text-primary text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 border border-primary/20"><Globe className="w-2.5 h-2.5" />Public</span>}
-                    </div>
-                    <p className="text-xs text-muted-foreground line-clamp-2 mb-3 min-h-[2rem]">{repo.description || "No description"}</p>
-                    <div className="flex items-center justify-between text-[11px] text-muted-foreground/60">
-                      <span>{new Date(repo.createdAt).toLocaleDateString()}</span>
-                      <span className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity text-primary">
-                        Open <ExternalLink className="w-2.5 h-2.5" />
+          {/* File Preview Content Modal */}
+          <AnimatePresence>
+            {previewFileState.isOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+                <motion.div
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.15, ease: EASE_OUT }}
+                  className="bg-[#111114] border border-white/[0.1] rounded-2xl max-w-2xl w-full max-h-[80vh] flex flex-col overflow-hidden shadow-2xl"
+                >
+                  <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/[0.06]">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Code2 className="w-4 h-4 text-[#8b5cf6] shrink-0" strokeWidth={1.5} />
+                      <span className="font-mono text-[13px] font-medium text-[#f4f4f5] truncate">
+                        {previewFileState.filePath}
                       </span>
                     </div>
-                  </motion.a>
-                ))}
-              </AnimatePresence>
-            </div>
-          ) : (
-            <div className="text-center py-10 bg-card/30 border border-dashed border-border/50 rounded-xl">
-              <p className="text-sm text-muted-foreground">No repositories yet.</p>
-            </div>
-          )}
-        </motion.section>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewFileState((prev) => ({ ...prev, isOpen: false }))}
+                      aria-label="Close preview"
+                      className="p-1.5 hover:bg-white/[0.06] rounded-md text-[#a1a1aa] hover:text-[#f4f4f5] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6]"
+                    >
+                      <X className="w-4 h-4" strokeWidth={1.5} />
+                    </button>
+                  </div>
 
-        <footer className="mt-16 text-center text-xs text-muted-foreground/40">RepoForge — drop archives, forge repos</footer>
+                  <div className="p-5 overflow-y-auto overscroll-contain flex-1 bg-[#09090b] font-mono text-[12px]">
+                    {filePreviewMutation.isPending ? (
+                      <div className="flex items-center justify-center py-12 text-[#a1a1aa]">
+                        <Loader2 className="w-5 h-5 animate-spin mr-2 text-[#8b5cf6]" strokeWidth={1.5} />
+                        Loading file preview…
+                      </div>
+                    ) : filePreviewMutation.isError ? (
+                      <div className="text-red-400 p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
+                        Failed to load file preview.
+                      </div>
+                    ) : filePreviewMutation.data ? (
+                      filePreviewMutation.data.isBinary ? (
+                        <div className="text-center py-10 text-[#a1a1aa]">
+                          <FileText className="w-8 h-8 mx-auto mb-2 text-[#71717a]" strokeWidth={1.5} />
+                          <p className="font-medium text-[14px] text-[#f4f4f5]">
+                            {filePreviewMutation.data.content}
+                          </p>
+                          <p className="text-[12px] text-[#71717a] mt-1 tabular-nums">
+                            File size: {formatBytes(filePreviewMutation.data.size)}
+                          </p>
+                        </div>
+                      ) : (
+                        <pre className="whitespace-pre-wrap break-all leading-relaxed text-[#d4d4d8]">
+                          {filePreviewMutation.data.content}
+                        </pre>
+                      )
+                    ) : null}
+                  </div>
+
+                  <div className="px-5 py-3 border-t border-white/[0.06] flex justify-end">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="rounded-lg border-white/[0.1] bg-[#111114] text-[#f4f4f5] hover:bg-white/[0.06]"
+                      onClick={() => setPreviewFileState((prev) => ({ ...prev, isOpen: false }))}
+                    >
+                      Close
+                    </Button>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+
+          {/* Connect GitHub Token Modal */}
+          <AnimatePresence>
+            {isTokenModalOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+                <motion.form
+                  onSubmit={handleSaveToken}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.15, ease: EASE_OUT }}
+                  className="bg-[#111114] border border-white/[0.1] rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Github className="w-4 h-4 text-[#f4f4f5]" strokeWidth={1.5} />
+                      <h3 className="text-[16px] font-medium text-[#f4f4f5]">
+                        Connect your GitHub account
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsTokenModalOpen(false)}
+                      aria-label="Close"
+                      className="p-1.5 hover:bg-white/[0.06] rounded-md text-[#a1a1aa] hover:text-[#f4f4f5] transition-colors duration-150"
+                    >
+                      <X className="w-4 h-4" strokeWidth={1.5} />
+                    </button>
+                  </div>
+
+                  <p className="text-[13px] leading-[1.55] text-[#a1a1aa] [text-wrap:pretty]">
+                    Paste a GitHub Personal Access Token with <code className="font-mono text-[#f4f4f5]">repo</code> scope. It is stored only in your browser session and sent per request — never saved on the server.
+                  </p>
+
+                  <div className="space-y-2">
+                    <Input
+                      type="password"
+                      value={tokenInput}
+                      onChange={(e) => setTokenInput(e.target.value)}
+                      placeholder="ghp_... or github_pat_..."
+                      className="font-mono text-base sm:text-[13px] bg-[#09090b] border-white/[0.1]"
+                      autoFocus
+                    />
+                    <a
+                      href="https://github.com/settings/tokens/new?scopes=repo&description=RepoForge"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-[12px] text-[#c4b5fd] hover:underline"
+                    >
+                      Generate a token on GitHub
+                      <ExternalLink className="w-3 h-3" strokeWidth={1.5} />
+                    </a>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setIsTokenModalOpen(false)}
+                      className="rounded-lg border-white/[0.1] bg-[#111114] text-[#f4f4f5] hover:bg-white/[0.06]"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="submit"
+                      size="sm"
+                      disabled={!tokenInput.trim()}
+                      className="rounded-lg bg-[#8b5cf6] hover:bg-[#7c3aed] text-white"
+                    >
+                      Connect
+                    </Button>
+                  </div>
+                </motion.form>
+              </div>
+            )}
+          </AnimatePresence>
+
+          {/* Recent GitHub Repos List */}
+          {user && (
+          <section className="mt-20 pt-10 border-t border-white/[0.06]">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-[18px] font-medium tracking-[-0.01em] text-[#f4f4f5]">
+                  Recent repositories
+                </h2>
+                <p className="text-[13px] text-[#71717a] mt-0.5">
+                  Existing repositories on {user.login}
+                </p>
+              </div>
+              <span className="text-[12px] font-mono text-[#a1a1aa] bg-[#111114] px-3 py-1 rounded-md border border-white/[0.08] tabular-nums">
+                {user.publicRepos} public
+              </span>
+            </div>
+
+            {isReposLoading ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {[...Array(6)].map((_, i) => (
+                  <div key={i} className="h-28 bg-[#111114] rounded-xl border border-white/[0.06]" />
+                ))}
+              </div>
+            ) : repos && repos.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {repos.slice(0, 9).map((repo) => (
+                  <a
+                    key={repo.name}
+                    href={repo.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="group block bg-[#111114] border border-white/[0.08] p-4 rounded-xl hover:border-white/[0.2] transition-[border-color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b5cf6]"
+                    data-testid={`repo-card-${repo.name}`}
+                  >
+                    <div className="flex justify-between items-start gap-2 mb-2">
+                      <span className="font-medium text-[14px] font-mono text-[#f4f4f5] truncate">
+                        {repo.name}
+                      </span>
+                      {repo.private ? (
+                        <span className="shrink-0 bg-white/[0.04] text-[#a1a1aa] text-[11px] font-mono px-2 py-0.5 rounded inline-flex items-center gap-1 border border-white/[0.06]">
+                          <Lock className="w-3 h-3" strokeWidth={1.5} />
+                          Private
+                        </span>
+                      ) : (
+                        <span className="shrink-0 bg-[#8b5cf6]/10 text-[#c4b5fd] text-[11px] font-mono px-2 py-0.5 rounded inline-flex items-center gap-1 border border-[#8b5cf6]/20">
+                          <Globe className="w-3 h-3" strokeWidth={1.5} />
+                          Public
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[13px] text-[#a1a1aa] line-clamp-2 mb-3 min-h-[2.4rem] leading-[1.45] [text-wrap:pretty]">
+                      {repo.description || "No description"}
+                    </p>
+                    <div className="flex items-center justify-between text-[12px] font-mono text-[#71717a] pt-2.5 border-t border-white/[0.06] tabular-nums">
+                      <span>{new Date(repo.createdAt).toLocaleDateString()}</span>
+                      <span className="inline-flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150 text-[#f4f4f5]">
+                        Open
+                        <ExternalLink className="w-3 h-3" strokeWidth={1.5} />
+                      </span>
+                    </div>
+                  </a>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-10 bg-[#111114] border border-dashed border-white/[0.08] rounded-xl">
+                <p className="text-[14px] text-[#a1a1aa]">No repositories found.</p>
+              </div>
+            )}
+          </section>
+          )}
+
+          <footer className="mt-16 pt-8 border-t border-white/[0.06] text-center text-[12px] text-[#71717a] font-mono">
+            RepoForge — Archive to GitHub repository creator
+          </footer>
+        </div>
       </div>
-    </div>
+    </MotionConfig>
   );
 }
 

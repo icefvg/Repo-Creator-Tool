@@ -31,7 +31,7 @@ paths:
       operationId: previewArchive
       tags: [github]
       summary: Preview archive contents
-      description: Accepts an archive file (zip, tar, tar.gz, tgz, tar.bz2), extracts it in memory, and returns the list of top-level subfolders with file counts. Returns a sessionId to reference the temp data for upload.
+      description: Accepts one or more archive files (zip, tar, tar.gz, tgz, tar.bz2), extracts them in memory, scans tech stack, and returns folder file trees.
       requestBody:
         required: true
         content:
@@ -53,6 +53,31 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "500":
           description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /github/file-preview:
+    post:
+      operationId: getFilePreview
+      tags: [github]
+      summary: Get content preview for a single file in archive
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FilePreviewBody"
+      responses:
+        "200":
+          description: File content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FilePreviewResult"
+        "400":
+          description: Bad request
           content:
             application/json:
               schema:
@@ -159,13 +184,17 @@ components:
   schemas:
     PreviewArchiveBody:
       type: object
-      required:
-        - file
       properties:
         file:
           type: string
           format: binary
-          description: Archive file to extract (zip, tar, tar.gz, tgz, tar.bz2, tar.xz)
+          description: Single archive file
+        files:
+          type: array
+          items:
+            type: string
+            format: binary
+          description: Multiple archive files
 
     PreviewResult:
       type: object
@@ -183,6 +212,45 @@ components:
         - folders
         - archiveName
 
+    TechDetection:
+      type: object
+      properties:
+        framework:
+          type: string
+        language:
+          type: string
+        topics:
+          type: array
+          items:
+            type: string
+        badges:
+          type: array
+          items:
+            type: string
+        recommendedGitignore:
+          type: string
+      required:
+        - framework
+        - language
+        - topics
+        - badges
+        - recommendedGitignore
+
+    FileTreeNode:
+      type: object
+      properties:
+        path:
+          type: string
+        size:
+          type: integer
+        type:
+          type: string
+          enum: [file, directory]
+      required:
+        - path
+        - size
+        - type
+
     FolderInfo:
       type: object
       properties:
@@ -190,9 +258,71 @@ components:
           type: string
         fileCount:
           type: integer
+        totalSizeBytes:
+          type: integer
+        detectedTech:
+          $ref: "#/components/schemas/TechDetection"
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileTreeNode"
       required:
         - name
         - fileCount
+        - totalSizeBytes
+        - detectedTech
+
+    FilePreviewBody:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        folderName:
+          type: string
+        filePath:
+          type: string
+      required:
+        - sessionId
+        - folderName
+        - filePath
+
+    FilePreviewResult:
+      type: object
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        size:
+          type: integer
+        isBinary:
+          type: boolean
+      required:
+        - path
+        - content
+        - size
+        - isBinary
+
+    FolderRepoConfig:
+      type: object
+      properties:
+        repoName:
+          type: string
+        private:
+          type: boolean
+        description:
+          type: string
+        topics:
+          type: array
+          items:
+            type: string
+        license:
+          type: string
+          enum: [MIT, Apache-2.0, GPL-3.0, BSD-3-Clause, None]
+        generateReadme:
+          type: boolean
+        generateGitignore:
+          type: boolean
 
     UploadSelectedBody:
       type: object
@@ -207,7 +337,10 @@ components:
           type: object
           additionalProperties:
             type: string
-          description: Optional map of folderName → custom repo name. Defaults to folder name.
+        repoConfigs:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/FolderRepoConfig"
         private:
           type: boolean
           default: false
@@ -280,6 +413,11 @@ components:
           type: boolean
         error:
           type: string
+        status:
+          type: string
+          enum: [queued, uploading, done, failed]
+        detectedTech:
+          $ref: "#/components/schemas/TechDetection"
       required:
         - folderName
         - repoName
